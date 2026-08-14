@@ -1,10 +1,12 @@
 // ==UserScript==
 // @name         Bambi Obeys
 // @namespace    BC-Hypnosis
-// @version      1.3.0
+// @version      1.4.5
 // @description  Bambi Obeys trigger system for Bondage Club
-// @author       Ophie/chatgptLoL
-// @match        https://www.bondageprojects.elementfx.com/*
+// @match        https://*.bondageprojects.elementfx.com/R*/*
+// @match        https://*.bondage-europe.com/R*/*
+// @match        https://*.bondageprojects.com/R*/*
+// @match        https://*.bondage-asia.com/club/R*
 // @grant        none
 // @updateURL    https://raw.githubusercontent.com/ophielilac/Bambi-obeys/main/Bambi-Obeys.user.js
 // @downloadURL  https://raw.githubusercontent.com/ophielilac/Bambi-obeys/main/Bambi-Obeys.user.js
@@ -68,6 +70,22 @@
         {
             name: "Zap cock drain obey",
             file: "Zap cock drain obey.m4a"
+        },
+        {
+            name: "Bambi Obey",
+            file: "Bambi Obeys.m4a"
+        },
+        {
+            name: "Airhead barbie",
+            file: "Airhead barbie.m4a"
+        },
+        {
+            name: "Braindead bobblehead",
+            file: "Braindead bobblehead.m4a"
+        },
+        {
+            name: "Cockblank lovedoll",
+            file: "Cockblank lovedoll.m4a"
         }
     ];
 
