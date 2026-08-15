@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bambi Obeys
 // @namespace    BC-Hypnosis
-// @version      1.5.4
+// @version      1.5.5
 // @description  Bambi Obeys trigger system for Bondage Club
 // @match        https://*.bondageprojects.elementfx.com/R*/*
 // @match        https://*.bondage-europe.com/R*/*
@@ -155,7 +155,7 @@
         labelOpacity: 0.42,
         labelText: "Bambi",
 
-        // Your personal Bambi position
+        // Personal Bambi position
         labelXOffset: 300,
         labelYOffset: -30
     };
@@ -235,6 +235,25 @@
     const audioBuffers = new Map();
     const loadingBuffers = new Map();
     const activeLayers = new Set();
+
+    // =========================================================
+    // AUDIO SESSION STATE
+    // =========================================================
+
+    // Current BOTH-ear/main track.
+    // While this exists, additional triggers use the
+    // alternating left/right system.
+    let mainAudioLayer = null;
+
+    // Remembers the LAST secondary ear used.
+    //
+    // -1 = left
+    //  1 = right
+    //
+    // This intentionally survives main-track endings.
+    // The next secondary trigger always uses the opposite
+    // ear from the last secondary trigger.
+    let lastSecondaryPan = 1;
 
     let lastTriggerTime = 0;
     let triggerHistory = [];
@@ -378,8 +397,6 @@
             }
         }
 
-        // New installs / older settings that did not
-        // have these offsets get the new anchor.
         if (
             !savedSettings ||
             !Object.prototype.hasOwnProperty.call(
@@ -529,9 +546,12 @@
                 )
             );
 
-            // Immediately tell other players that your
-            // personal Bambi position changed.
-            announcePresence();
+            if (
+                typeof Player !==
+                "undefined"
+            ) {
+                announcePresence();
+            }
         } catch (error) {
             console.error(
                 "Bambi Obeys: settings save failed",
@@ -1016,35 +1036,40 @@
         source.buffer =
             buffer;
 
-        const isMain =
-            activeLayers.size ===
-            0;
+        // =====================================================
+        // MAIN VS SECONDARY
+        // =====================================================
 
-        const layerNumber =
-            activeLayers.size;
+        const isMain =
+            mainAudioLayer === null;
+
+        let pan = 0;
 
         if (isMain) {
-            gain.gain.value =
-                0;
+            // Main track is BOTH ears.
+            pan = 0;
+        } else if (
+            settings.alternateEars
+        ) {
+            // ALWAYS use the opposite ear from
+            // the previous secondary trigger.
+            pan =
+                lastSecondaryPan === -1
+                    ? 1
+                    : -1;
 
-            panner.pan.value =
-                0;
+            // Immediately remember the ear we used.
+            lastSecondaryPan =
+                pan;
         } else {
-            gain.gain.value =
-                0;
-
-            if (
-                settings.alternateEars
-            ) {
-                panner.pan.value =
-                    layerNumber % 2 === 1
-                        ? 1
-                        : -1;
-            } else {
-                panner.pan.value =
-                    0;
-            }
+            pan = 0;
         }
+
+        gain.gain.value =
+            0;
+
+        panner.pan.value =
+            pan;
 
         source.connect(
             gain
@@ -1069,6 +1094,11 @@
         activeLayers.add(
             layer
         );
+
+        if (isMain) {
+            mainAudioLayer =
+                layer;
+        }
 
         const fadeIn =
             Math.max(
@@ -1122,6 +1152,25 @@
                     layer
                 );
 
+                // Only the MAIN track determines
+                // when a BOTH-ear session ends.
+                if (
+                    mainAudioLayer ===
+                    layer
+                ) {
+                    mainAudioLayer =
+                        null;
+
+                    // IMPORTANT:
+                    // We DO NOT reset lastSecondaryPan.
+                    //
+                    // The last secondary ear is remembered
+                    // across main-track sessions.
+                    console.log(
+                        "Bambi Obeys: main track ended. Last secondary ear remembered."
+                    );
+                }
+
                 try {
                     gain.disconnect();
                     panner.disconnect();
@@ -1154,16 +1203,38 @@
 
             gain.gain.linearRampToValueAtTime(
                 0,
-                stopAt + fadeOut
+                stopAt +
+                    fadeOut
             );
+        }
+
+        let location;
+
+        if (pan === 0) {
+            location =
+                "both ears";
+        } else if (pan < 0) {
+            location =
+                "left ear";
+        } else {
+            location =
+                "right ear";
         }
 
         console.log(
             "Bambi Obeys: playing",
             TRIGGERS[index].name,
+            `(${location})`,
             isMain
-                ? "(main / center)"
-                : `(${panner.pan.value > 0 ? "right" : panner.pan.value < 0 ? "left" : "center"})`
+                ? "[MAIN]"
+                : "[SECONDARY]",
+            !isMain
+                ? `next remembered ear: ${
+                      lastSecondaryPan === -1
+                          ? "left"
+                          : "right"
+                  }`
+                : ""
         );
     }
 
@@ -1346,6 +1417,13 @@
                 );
             } catch {}
         }
+
+        // Completely end the main session.
+        mainAudioLayer =
+            null;
+
+        // Intentionally DO NOT reset lastSecondaryPan.
+        // The last-used ear must be remembered.
     }
 
     // =========================================================
@@ -1492,7 +1570,7 @@
     }
 
     // =========================================================
-    // BC NETWORK
+    // NETWORK
     // =========================================================
 
     function sendWhisper(
@@ -1535,6 +1613,7 @@
     }
 
     function sendBambiMessage(
+        targetMemberNumber,
         payload
     ) {
         if (
@@ -1545,25 +1624,37 @@
         }
 
         try {
+            const packet = {
+                Type:
+                    "Hidden",
+
+                Content:
+                    PROTOCOL,
+
+                Sender:
+                    Player.MemberNumber,
+
+                Dictionary: [
+                    {
+                        message:
+                            payload
+                    }
+                ]
+            };
+
+            const target =
+                normalizeMemberNumber(
+                    targetMemberNumber
+                );
+
+            if (target) {
+                packet.Target =
+                    target;
+            }
+
             ServerSend(
                 "ChatRoomChat",
-                {
-                    Type:
-                        "Hidden",
-
-                    Content:
-                        PROTOCOL,
-
-                    Sender:
-                        Player.MemberNumber,
-
-                    Dictionary: [
-                        {
-                            message:
-                                payload
-                        }
-                    ]
-                }
+                packet
             );
 
             return true;
@@ -1604,28 +1695,33 @@
                 continue;
             }
 
-            sendBambiMessage({
-                type:
-                    "presence",
+            // Presence is intentionally broadcast.
+            // It contains no target and every Bambi
+            // client can use the player's position.
+            sendBambiMessage(
+                null,
+                {
+                    type:
+                        "presence",
 
-                memberNumber:
-                    myNumber,
+                    memberNumber:
+                        myNumber,
 
-                name:
-                    Player?.Name ||
-                    "Bambi",
+                    name:
+                        Player?.Name ||
+                        "Bambi",
 
-                // Send MY personal Bambi position.
-                labelXOffset:
-                    Number(
-                        settings.labelXOffset
-                    ),
+                    labelXOffset:
+                        Number(
+                            settings.labelXOffset
+                        ),
 
-                labelYOffset:
-                    Number(
-                        settings.labelYOffset
-                    )
-            });
+                    labelYOffset:
+                        Number(
+                            settings.labelYOffset
+                        )
+                }
+            );
         }
     }
 
@@ -1637,16 +1733,23 @@
                 memberNumber
             );
 
+        const myNumber =
+            normalizeMemberNumber(
+                Player?.MemberNumber
+            );
+
         if (!target) {
             return;
         }
 
         if (
             target ===
-            normalizeMemberNumber(
-                Player?.MemberNumber
-            )
+            myNumber
         ) {
+            setStatus(
+                "You cannot connect to yourself."
+            );
+
             return;
         }
 
@@ -1668,7 +1771,16 @@
                 memberNumber
             );
 
-        if (!target) {
+        const myNumber =
+            normalizeMemberNumber(
+                Player?.MemberNumber
+            );
+
+        if (
+            !target ||
+            target ===
+                myNumber
+        ) {
             return;
         }
 
@@ -1697,10 +1809,17 @@
         savePendingRequests();
         saveConnections();
 
-        sendBambiMessage({
-            type:
-                "connection_accepted"
-        });
+        // Explicit target.
+        sendBambiMessage(
+            target,
+            {
+                type:
+                    "connection_accepted",
+
+                targetMemberNumber:
+                    target
+            }
+        );
 
         refreshAllUI();
     }
@@ -1713,7 +1832,16 @@
                 memberNumber
             );
 
-        if (!target) {
+        const myNumber =
+            normalizeMemberNumber(
+                Player?.MemberNumber
+            );
+
+        if (
+            !target ||
+            target ===
+                myNumber
+        ) {
             return;
         }
 
@@ -1723,10 +1851,17 @@
 
         saveConnections();
 
-        sendBambiMessage({
-            type:
-                "connection_removed"
-        });
+        // Explicit target.
+        sendBambiMessage(
+            target,
+            {
+                type:
+                    "connection_removed",
+
+                targetMemberNumber:
+                    target
+            }
+        );
 
         refreshAllUI();
     }
@@ -1739,6 +1874,26 @@
             normalizeMemberNumber(
                 memberNumber
             );
+
+        const myNumber =
+            normalizeMemberNumber(
+                Player?.MemberNumber
+            );
+
+        if (!target) {
+            return;
+        }
+
+        if (
+            target ===
+            myNumber
+        ) {
+            setStatus(
+                "You cannot send a remote trigger to yourself."
+            );
+
+            return;
+        }
 
         if (
             !connectedUsers.has(
@@ -1772,16 +1927,65 @@
             return;
         }
 
-        sendBambiMessage({
-            type:
-                "trigger",
+        // The target is stored INSIDE the payload.
+        // This makes targeting work even if the game's
+        // Hidden packet itself reaches everyone.
+        sendBambiMessage(
+            target,
+            {
+                type:
+                    "trigger",
 
-            trigger:
-                triggerIndex
-        });
+                trigger:
+                    triggerIndex,
+
+                targetMemberNumber:
+                    target
+            }
+        );
 
         setStatus(
             `Sent "${TRIGGERS[triggerIndex].name}" to ${getCharacterName(target)}`
+        );
+    }
+
+    // =========================================================
+    // TARGET VALIDATION
+    // =========================================================
+
+    function packetIsForMe(
+        payload
+    ) {
+        if (
+            !payload ||
+            typeof payload !==
+                "object"
+        ) {
+            return false;
+        }
+
+        // Presence packets are intentionally broadcast.
+        if (
+            payload.type ===
+            "presence"
+        ) {
+            return true;
+        }
+
+        const myNumber =
+            normalizeMemberNumber(
+                Player?.MemberNumber
+            );
+
+        const target =
+            normalizeMemberNumber(
+                payload.targetMemberNumber
+            );
+
+        return (
+            target !== 0 &&
+            target ===
+                myNumber
         );
     }
 
@@ -1821,12 +2025,26 @@
             return;
         }
 
+        const myNumber =
+            normalizeMemberNumber(
+                Player?.MemberNumber
+            );
+
+        // Never process our own packet.
+        if (
+            sender ===
+            myNumber
+        ) {
+            return;
+        }
+
         // =====================================================
         // PRESENCE
         // =====================================================
 
         if (
-            payload.type === "presence"
+            payload.type ===
+            "presence"
         ) {
             let labelXOffset =
                 Number(
@@ -1843,7 +2061,8 @@
                     labelXOffset
                 )
             ) {
-                labelXOffset = 300;
+                labelXOffset =
+                    300;
             }
 
             if (
@@ -1851,7 +2070,8 @@
                     labelYOffset
                 )
             ) {
-                labelYOffset = -30;
+                labelYOffset =
+                    -30;
             }
 
             bambiPresence.set(
@@ -1866,7 +2086,6 @@
                             sender
                         ),
 
-                    // Store THEIR personal Bambi position.
                     labelXOffset:
                         labelXOffset,
 
@@ -1878,6 +2097,18 @@
                 }
             );
 
+            return;
+        }
+
+        // =====================================================
+        // TARGETED PACKETS
+        // =====================================================
+
+        if (
+            !packetIsForMe(
+                payload
+            )
+        ) {
             return;
         }
 
@@ -2029,8 +2260,25 @@
             return;
         }
 
+        const myNumber =
+            normalizeMemberNumber(
+                Player?.MemberNumber
+            );
+
+        // Ignore our own chat / whisper.
+        if (
+            sender ===
+            myNumber
+        ) {
+            return;
+        }
+
         const message =
             data.Content.trim();
+
+        // =====================================================
+        // CONNECT
+        // =====================================================
 
         if (
             data.Type === "Whisper" &&
@@ -2066,6 +2314,10 @@
 
             return;
         }
+
+        // =====================================================
+        // DISCONNECT
+        // =====================================================
 
         if (
             data.Type === "Whisper" &&
@@ -2220,15 +2472,10 @@
             normalized ===
             myNumber;
 
-        // =====================================================
-        // EACH PLAYER HAS THEIR OWN POSITION
-        // =====================================================
-
         let labelXOffset;
         let labelYOffset;
 
         if (isMe) {
-            // Draw MY Bambi using MY settings.
             labelXOffset =
                 Number(
                     settings.labelXOffset
@@ -2239,8 +2486,6 @@
                     settings.labelYOffset
                 );
         } else {
-            // Draw SOMEONE ELSE'S Bambi using THEIR
-            // broadcasted settings.
             const presence =
                 bambiPresence.get(
                     normalized
@@ -2279,16 +2524,13 @@
                 );
         }
 
-        // =====================================================
-        // FALLBACKS
-        // =====================================================
-
         if (
             !Number.isFinite(
                 labelXOffset
             )
         ) {
-            labelXOffset = 300;
+            labelXOffset =
+                300;
         }
 
         if (
@@ -2296,7 +2538,8 @@
                 labelYOffset
             )
         ) {
-            labelYOffset = -30;
+            labelYOffset =
+                -30;
         }
 
         const x =
@@ -2323,10 +2566,6 @@
         ) {
             return;
         }
-
-        // =====================================================
-        // DRAW
-        // =====================================================
 
         const oldAlpha =
             context.globalAlpha;
@@ -2488,8 +2727,6 @@
                             return result;
                         }
 
-                        // We intentionally DO NOT skip our
-                        // own MemberNumber here.
                         drawBambiLabel(
                             context,
                             memberNumber,
@@ -3767,10 +4004,6 @@
             )
         );
 
-        // =====================================================
-        // PERSONAL HORIZONTAL POSITION
-        // =====================================================
-
         content.appendChild(
             makeNumberSlider(
                 "Label horizontal offset",
@@ -3788,10 +4021,6 @@
                 }
             )
         );
-
-        // =====================================================
-        // PERSONAL VERTICAL POSITION
-        // =====================================================
 
         content.appendChild(
             makeNumberSlider(
@@ -4081,6 +4310,15 @@
                             user.memberNumber
                         )
                 )
+                .filter(
+                    user =>
+                        normalizeMemberNumber(
+                            user.memberNumber
+                        ) !==
+                        normalizeMemberNumber(
+                            Player?.MemberNumber
+                        )
+                )
                 .sort(
                     (a, b) =>
                         a.name.localeCompare(
@@ -4172,6 +4410,15 @@
                     user =>
                         isInCurrentRoom(
                             user.memberNumber
+                        )
+                )
+                .filter(
+                    user =>
+                        normalizeMemberNumber(
+                            user.memberNumber
+                        ) !==
+                        normalizeMemberNumber(
+                            Player?.MemberNumber
                         )
                 )
                 .length;
