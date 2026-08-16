@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bambi Obeys
 // @namespace    BC-Hypnosis
-// @version      1.5.2
+// @version      1.5.5
 // @description  Bambi Obeys trigger system for Bondage Club
 // @match        https://*.bondageprojects.elementfx.com/R*/*
 // @match        https://*.bondage-europe.com/R*/*
@@ -26,47 +26,47 @@
         {
             name: "Bambi Focus",
             file: "Bambi Focus.m4a",
-            description: "Causes Bambi to pay attention to what she is supposed to be doing."
+            description: "Brings Bambi into a focused state."
         },
         {
             name: "Bambi Freeze",
             file: "Bambi Freeze.m4a",
-            description: "Deepens trance, blanks mind, and erases all thought. Ensures acceptance and amnesia of further suggestions."
+            description: "Temporarily freezes Bambi in place."
         },
         {
             name: "Bambi Reset",
             file: "Bambi Reset.m4a",
-            description: "Memory wipe and replacement. Self-acceptance and belief that everything conditioned has always been that way."
+            description: "Returns Bambi toward a neutral state."
         },
         {
             name: "Bambi does as she's told",
             file: "Bambi does as she's told.m4a",
-            description: "Instant obedience override. Causes automatic mindless compliance with the last command given until fully carried out."
+            description: "Reinforces obedient behavior."
         },
         {
             name: "Bambi sleep",
             file: "Bambi sleep.m4a",
-            description: "Instant deep trance trigger.."
+            description: "Puts Bambi into the programmed sleep state."
         },
         {
             name: "Bambi wake and obey",
             file: "Bambi wake and obey.m4a",
-            description: "Wakes Bambi from sleep, waiting for her next command with perfect posture."
+            description: "Wakes Bambi from the programmed sleep state."
         },
         {
             name: "Blonde Moment",
             file: "Blonde Moment.m4a",
-            description: "Dumb-down trigger causing IQ drop and loss of thought, replaced with ditzy airhead confusion."
+            description: "A temporary blonde-moment trigger."
         },
         {
             name: "Drop for cock",
             file: "Drop for cock.m4a",
-            description: "Legs buckle, body drops to its knees, mind goes blank, and mouth opens."
+            description: "Temporary trigger description."
         },
         {
             name: "Good girl",
             file: "Good girl.m4a",
-            description: "Causes feelings of happiness, euphoria, and pleasure."
+            description: "Positive reinforcement trigger."
         },
         {
             name: "Safe and Secure",
@@ -76,32 +76,32 @@
         {
             name: "Snap and forget",
             file: "Snap and forget.m4a",
-            description: "Reinforces feelings of comfort and acceptance for all conditioning."
+            description: "Temporary memory-reset trigger."
         },
         {
             name: "Zap cock drain obey",
             file: "Zap cock drain obey.m4a",
-            description: "Silences the mental monologue by plugging it with cock. Overwhelms with feelings of sucking cock inside the mind."
+            description: "Temporary trigger description."
         },
         {
-            name: "Bambi Obeys",
+            name: "Bambi Obey",
             file: "Bambi Obeys.m4a",
-            description: "Affirms your understanding, acceptance, and readiness to embody your commands, reinforcing your devotion."
+            description: "General obedience reinforcement."
         },
         {
             name: "Airhead barbie",
             file: "Airhead barbie.m4a",
-            description: "Activates bimbo mental dumb-down level #1; obedient, intelligence restricted, easily confused, small and simple bimbo-voiced thoughts only, fixation on cock and appearance."
+            description: "Temporary trigger description."
         },
         {
             name: "Braindead bobblehead",
             file: "Braindead bobblehead.m4a",
-            description: "Activates bimbo mental dumb-down level #2; relaxation, completely and permanent thoughtless confusion, any attempt to think immediately shut down by mental windshield wipers, instinctively bobs blankly on cock."
+            description: "Temporary trigger description."
         },
         {
             name: "Cockblank lovedoll",
             file: "Cockblank lovedoll.m4a",
-            description: "Activates bimbo mental dumb-down level #3; shuts off all awareness, becoming a silicone sexdoll, feeling only tits and holes, rendered immobile, passive and compliant with limbs positioned to allow easy access and use."
+            description: "Temporary trigger description."
         }
     ];
 
