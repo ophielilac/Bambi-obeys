@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bambi Obeys
 // @namespace    BC-Hypnosis
-// @version      2.0
+// @version      2.0.1
 // @description  Bambi Obeys trigger system for Bondage Club
 // @match        https://*.bondageprojects.elementfx.com/R*/*
 // @match        https://*.bondage-europe.com/R*/*
@@ -16,6 +16,16 @@
     'use strict';
 
     // =========================================================
+    // VERSION / UPDATE
+    // =========================================================
+
+    const VERSION =
+        "2.0.0";
+
+    const VERSION_URL =
+        "https://raw.githubusercontent.com/ophielilac/Bambi-obeys/main/Bambi-Obeys.user.js";
+
+    // =========================================================
     // CONFIG
     // =========================================================
 
@@ -26,47 +36,47 @@
         {
             name: "Bambi Focus",
             file: "Bambi Focus.m4a",
-            description: "Causes Bambi to pay attention to what she is supposed to be doing."
+            description: "Brings Bambi into a focused state."
         },
         {
             name: "Bambi Freeze",
             file: "Bambi Freeze.m4a",
-            description: "Deepens trance, blanks mind, and erases all thought. Ensures acceptance and amnesia of further suggestions."
+            description: "Temporarily freezes Bambi in place."
         },
         {
             name: "Bambi Reset",
             file: "Bambi Reset.m4a",
-            description: "Memory wipe and replacement. Self-acceptance and belief that everything conditioned has always been that way."
+            description: "Returns Bambi toward a neutral state."
         },
         {
             name: "Bambi does as she's told",
             file: "Bambi does as she's told.m4a",
-            description: "Instant obedience override. Causes automatic mindless compliance with the last command given until fully carried out."
+            description: "Reinforces obedient behavior."
         },
         {
             name: "Bambi sleep",
             file: "Bambi sleep.m4a",
-            description: "Instant deep trance trigger.."
+            description: "Puts Bambi into the programmed sleep state."
         },
         {
             name: "Bambi wake and obey",
             file: "Bambi wake and obey.m4a",
-            description: "Wakes Bambi from sleep, waiting for her next command with perfect posture."
+            description: "Wakes Bambi from the programmed sleep state."
         },
         {
             name: "Blonde Moment",
             file: "Blonde Moment.m4a",
-            description: "Dumb-down trigger causing IQ drop and loss of thought, replaced with ditzy airhead confusion."
+            description: "A temporary blonde-moment trigger."
         },
         {
             name: "Drop for cock",
             file: "Drop for cock.m4a",
-            description: "Legs buckle, body drops to its knees, mind goes blank, and mouth opens."
+            description: "Temporary trigger description."
         },
         {
             name: "Good girl",
             file: "Good girl.m4a",
-            description: "Causes feelings of happiness, euphoria, and pleasure."
+            description: "Positive reinforcement trigger."
         },
         {
             name: "Safe and Secure",
@@ -76,35 +86,34 @@
         {
             name: "Snap and forget",
             file: "Snap and forget.m4a",
-            description: "Reinforces feelings of comfort and acceptance for all conditioning."
+            description: "Temporary memory-reset trigger."
         },
         {
             name: "Zap cock drain obey",
             file: "Zap cock drain obey.m4a",
-            description: "Silences the mental monologue by plugging it with cock. Overwhelms with feelings of sucking cock inside the mind."
+            description: "Temporary trigger description."
         },
         {
-            name: "Bambi Obeys",
+            name: "Bambi Obey",
             file: "Bambi Obeys.m4a",
-            description: "Affirms your understanding, acceptance, and readiness to embody your commands, reinforcing your devotion."
+            description: "General obedience reinforcement."
         },
         {
             name: "Airhead barbie",
             file: "Airhead barbie.m4a",
-            description: "Activates bimbo mental dumb-down level #1; obedient, intelligence restricted, easily confused, small and simple bimbo-voiced thoughts only, fixation on cock and appearance."
+            description: "Temporary trigger description."
         },
         {
             name: "Braindead bobblehead",
             file: "Braindead bobblehead.m4a",
-            description: "Activates bimbo mental dumb-down level #2; relaxation, completely and permanent thoughtless confusion, any attempt to think immediately shut down by mental windshield wipers, instinctively bobs blankly on cock."
+            description: "Temporary trigger description."
         },
         {
             name: "Cockblank lovedoll",
             file: "Cockblank lovedoll.m4a",
-            description: "Activates bimbo mental dumb-down level #3; shuts off all awareness, becoming a silicone sexdoll, feeling only tits and holes, rendered immobile, passive and compliant with limbs positioned to allow easy access and use."
+            description: "Temporary trigger description."
         }
     ];
-
 
     const SETTINGS_KEY =
         "bambiObeysSettings_v5";
@@ -444,15 +453,18 @@
     // AUDIO SESSION STATE
     // =========================================================
 
+    // The current main / BOTH-ear track.
+    // While this exists, subsequent triggers are secondary.
     let mainAudioLayer = null;
 
-    // Remembers the last secondary ear.
+    // Remembers the LAST secondary ear used.
     //
     // -1 = left
     //  1 = right
     //
-    // We initialize to RIGHT so that the first secondary
-    // trigger uses LEFT.
+    // Starting at right means first secondary = left.
+    // This value is intentionally NOT reset when the
+    // main track finishes.
     let lastSecondaryPan = 1;
 
     let lastTriggerTime = 0;
@@ -597,6 +609,8 @@
             }
         }
 
+        // Migrate old settings that didn't have the
+        // new personal label coordinates.
         if (
             !savedSettings ||
             !Object.prototype.hasOwnProperty.call(
@@ -746,6 +760,8 @@
                 )
             );
 
+            // Tell everyone about your new personal
+            // Bambi position.
             if (
                 typeof Player !==
                 "undefined"
@@ -1029,7 +1045,7 @@
     }
 
     // =========================================================
-    // AUDIO
+    // AUDIO ENGINE
     // =========================================================
 
     function ensureAudioContext() {
@@ -1237,7 +1253,7 @@
             buffer;
 
         // =====================================================
-        // AUDIO POSITION
+        // MAIN / SECONDARY AUDIO POSITION
         // =====================================================
 
         const isMain =
@@ -1246,19 +1262,19 @@
         let pan = 0;
 
         if (isMain) {
-            // First track of a session = BOTH.
+            // First track = BOTH ears.
             pan = 0;
         } else if (
             settings.alternateEars
         ) {
             // Always use the opposite ear from
-            // the LAST secondary trigger.
+            // the previous secondary trigger.
             pan =
                 lastSecondaryPan === -1
                     ? 1
                     : -1;
 
-            // Remember what we just used.
+            // Remember this one for the NEXT trigger.
             lastSecondaryPan =
                 pan;
         } else {
@@ -1360,11 +1376,9 @@
                         null;
 
                     // IMPORTANT:
-                    // lastSecondaryPan is NOT reset.
-                    //
-                    // The next secondary trigger after
-                    // this main track ends continues from
-                    // the opposite side of the last one.
+                    // Do NOT reset lastSecondaryPan.
+                    // It remembers the last ear used across
+                    // main-track sessions.
                     console.log(
                         "Bambi Obeys: main track ended. Last secondary ear retained."
                     );
@@ -1426,14 +1440,7 @@
             `(${location})`,
             isMain
                 ? "[MAIN]"
-                : "[SECONDARY]",
-            !isMain
-                ? `last secondary ear: ${
-                      lastSecondaryPan === -1
-                          ? "left"
-                          : "right"
-                  }`
-                : ""
+                : "[SECONDARY]"
         );
     }
 
@@ -1620,7 +1627,7 @@
         mainAudioLayer =
             null;
 
-        // Preserve lastSecondaryPan.
+        // Intentionally preserve lastSecondaryPan.
     }
 
     // =========================================================
@@ -1892,6 +1899,7 @@
                 continue;
             }
 
+            // Presence is broadcast.
             sendBambiMessage(
                 null,
                 {
@@ -2003,6 +2011,7 @@
         savePendingRequests();
         saveConnections();
 
+        // Target only this user.
         sendBambiMessage(
             target,
             {
@@ -2044,6 +2053,7 @@
 
         saveConnections();
 
+        // Target only this user.
         sendBambiMessage(
             target,
             {
@@ -2119,6 +2129,10 @@
             return;
         }
 
+        // The target is included INSIDE the payload too.
+        // This prevents other clients from acting on the
+        // packet even if BC delivers the Hidden message
+        // to the entire room.
         sendBambiMessage(
             target,
             {
@@ -2153,6 +2167,7 @@
             return false;
         }
 
+        // Presence packets are broadcast.
         if (
             payload.type ===
             "presence"
@@ -2218,7 +2233,7 @@
                 Player?.MemberNumber
             );
 
-        // Never process our own packet.
+        // Ignore our own hidden packets.
         if (
             sender ===
             myNumber
@@ -2289,7 +2304,7 @@
         }
 
         // =====================================================
-        // TARGETED PACKETS
+        // TARGET CHECK
         // =====================================================
 
         if (
@@ -2453,6 +2468,7 @@
                 Player?.MemberNumber
             );
 
+        // Ignore our own messages.
         if (
             sender ===
             myNumber
@@ -2462,6 +2478,10 @@
 
         const message =
             data.Content.trim();
+
+        // =====================================================
+        // CONNECT
+        // =====================================================
 
         if (
             data.Type === "Whisper" &&
@@ -2497,6 +2517,10 @@
 
             return;
         }
+
+        // =====================================================
+        // DISCONNECT
+        // =====================================================
 
         if (
             data.Type === "Whisper" &&
@@ -2655,6 +2679,7 @@
         let labelYOffset;
 
         if (isMe) {
+            // Our own Bambi uses our own position.
             labelXOffset =
                 Number(
                     settings.labelXOffset
@@ -2665,6 +2690,7 @@
                     settings.labelYOffset
                 );
         } else {
+            // Other people's Bambi uses THEIR position.
             const presence =
                 bambiPresence.get(
                     normalized
@@ -2906,6 +2932,7 @@
                             return result;
                         }
 
+                        // Do NOT skip ourselves.
                         drawBambiLabel(
                             context,
                             memberNumber,
@@ -4405,6 +4432,11 @@
         connectSelect.innerHTML =
             "";
 
+        const myNumber =
+            normalizeMemberNumber(
+                Player?.MemberNumber
+            );
+
         const others =
             getRoomCharacters()
                 .filter(
@@ -4412,9 +4444,7 @@
                         normalizeMemberNumber(
                             character?.MemberNumber
                         ) !==
-                        normalizeMemberNumber(
-                            Player?.MemberNumber
-                        )
+                        myNumber
                 )
                 .sort(
                     (a, b) =>
@@ -4479,6 +4509,11 @@
         targetSelect.innerHTML =
             "";
 
+        const myNumber =
+            normalizeMemberNumber(
+                Player?.MemberNumber
+            );
+
         const available =
             [
                 ...connectedUsers.values()
@@ -4494,9 +4529,7 @@
                         normalizeMemberNumber(
                             user.memberNumber
                         ) !==
-                        normalizeMemberNumber(
-                            Player?.MemberNumber
-                        )
+                        myNumber
                 )
                 .sort(
                     (a, b) =>
@@ -4581,6 +4614,11 @@
             return;
         }
 
+        const myNumber =
+            normalizeMemberNumber(
+                Player?.MemberNumber
+            );
+
         const count =
             [
                 ...connectedUsers.values()
@@ -4596,9 +4634,7 @@
                         normalizeMemberNumber(
                             user.memberNumber
                         ) !==
-                        normalizeMemberNumber(
-                            Player?.MemberNumber
-                        )
+                        myNumber
                 )
                 .length;
 
@@ -4778,10 +4814,21 @@
     // =========================================================
 
     function createUI() {
+        if (
+            document.getElementById(
+                "bambi-obeys-container"
+            )
+        ) {
+            return;
+        }
+
         container =
             document.createElement(
                 "div"
             );
+
+        container.id =
+            "bambi-obeys-container";
 
         Object.assign(
             container.style,
@@ -4847,7 +4894,7 @@
         );
 
         floatingButton.title =
-            "Bambi Obeys";
+            `Bambi Obeys ${VERSION}`;
 
         panel =
             document.createElement(
@@ -4914,7 +4961,7 @@
             );
 
         title.textContent =
-            "Bambi Obeys";
+            `Bambi Obeys ${VERSION}`;
 
         Object.assign(
             title.style,
@@ -5172,6 +5219,9 @@
     installAudioUnlock();
     checkForBambiUpdate();
 
+    let bambiUICreated =
+        false;
+
     const wait =
         setInterval(
             () => {
@@ -5189,72 +5239,99 @@
                     return;
                 }
 
-                if (
-                    !registerBambiMod()
-                ) {
-                    return;
-                }
-
-                const messageHookReady =
-                    installBambiMessageHook();
-
-                const labelHookReady =
-                    installBambiLabelHook();
+                // -------------------------------------------------
+                // Register ModSDK
+                // -------------------------------------------------
 
                 if (
-                    !messageHookReady ||
-                    !labelHookReady
+                    !bambiMod
                 ) {
-                    return;
+                    if (
+                        !registerBambiMod()
+                    ) {
+                        return;
+                    }
                 }
 
-                clearInterval(
-                    wait
-                );
+                // -------------------------------------------------
+                // Install message hook
+                // -------------------------------------------------
 
-                createUI();
+                installBambiMessageHook();
 
-                scheduleRemainingWake();
+                // -------------------------------------------------
+                // Try label hook
+                //
+                // This does NOT block the UI.
+                // BC may expose the draw function slightly later.
+                // -------------------------------------------------
 
-                setTimeout(
-                    refreshRoomData,
-                    1000
-                );
+                installBambiLabelHook();
 
-                setInterval(
-                    refreshRoomData,
-                    5000
-                );
+                // -------------------------------------------------
+                // Create UI immediately
+                // -------------------------------------------------
 
-                setInterval(
-                    () => {
-                        const cutoff =
-                            now() -
-                            15000;
+                if (
+                    !bambiUICreated
+                ) {
+                    bambiUICreated =
+                        true;
 
-                        for (
-                            const [
-                                memberNumber,
-                                presence
-                            ]
-                            of bambiPresence
-                        ) {
-                            if (
-                                presence.lastSeen <
-                                cutoff
+                    createUI();
+
+                    scheduleRemainingWake();
+
+                    setTimeout(
+                        refreshRoomData,
+                        1000
+                    );
+
+                    setInterval(
+                        refreshRoomData,
+                        5000
+                    );
+
+                    setInterval(
+                        () => {
+                            const cutoff =
+                                now() -
+                                15000;
+
+                            for (
+                                const [
+                                    memberNumber,
+                                    presence
+                                ]
+                                of bambiPresence
                             ) {
-                                bambiPresence.delete(
-                                    memberNumber
-                                );
+                                if (
+                                    presence.lastSeen <
+                                    cutoff
+                                ) {
+                                    bambiPresence.delete(
+                                        memberNumber
+                                    );
+                                }
                             }
-                        }
-                    },
-                    5000
-                );
+                        },
+                        5000
+                    );
 
-                console.log(
-                    `Bambi Obeys ${VERSION} loaded successfully.`
-                );
+                    console.log(
+                        `Bambi Obeys ${VERSION} loaded successfully.`
+                    );
+                }
+
+                // -------------------------------------------------
+                // Keep retrying the label hook
+                // -------------------------------------------------
+
+                if (
+                    !bambiDrawHookInstalled
+                ) {
+                    installBambiLabelHook();
+                }
             },
             1000
         );
