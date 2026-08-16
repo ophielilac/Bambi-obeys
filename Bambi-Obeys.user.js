@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bambi Obeys
 // @namespace    BC-Hypnosis
-// @version      1.5.5
+// @version      2.0
 // @description  Bambi Obeys trigger system for Bondage Club
 // @match        https://*.bondageprojects.elementfx.com/R*/*
 // @match        https://*.bondage-europe.com/R*/*
@@ -183,7 +183,7 @@
             bambiMod = bcModSdk.registerMod({
                 name: "BambiObeys",
                 fullName: "Bambi Obeys",
-                version: "1.5.2",
+                version: VERSION,
                 repository:
                     "https://github.com/ophielilac/Bambi-obeys"
             });
@@ -197,6 +197,210 @@
 
             return false;
         }
+    }
+
+    // =========================================================
+    // UPDATE CHECKER
+    // =========================================================
+
+    function compareVersions(
+        a,
+        b
+    ) {
+        const pa =
+            String(a)
+                .split(".")
+                .map(Number);
+
+        const pb =
+            String(b)
+                .split(".")
+                .map(Number);
+
+        const length =
+            Math.max(
+                pa.length,
+                pb.length
+            );
+
+        for (
+            let i = 0;
+            i < length;
+            i++
+        ) {
+            const av =
+                Number.isFinite(
+                    pa[i]
+                )
+                    ? pa[i]
+                    : 0;
+
+            const bv =
+                Number.isFinite(
+                    pb[i]
+                )
+                    ? pb[i]
+                    : 0;
+
+            if (
+                av >
+                bv
+            ) {
+                return 1;
+            }
+
+            if (
+                av <
+                bv
+            ) {
+                return -1;
+            }
+        }
+
+        return 0;
+    }
+
+    function showBambiUpdateMessage(
+        newVersion
+    ) {
+        const existing =
+            document.getElementById(
+                "bambi-update-notification"
+            );
+
+        if (existing) {
+            return;
+        }
+
+        const notification =
+            document.createElement(
+                "div"
+            );
+
+        notification.id =
+            "bambi-update-notification";
+
+        notification.textContent =
+            `New version Bambi! v${newVersion} is available. Refresh like a good girl~`;
+
+        Object.assign(
+            notification.style,
+            {
+                position:
+                    "fixed",
+
+                top:
+                    "20px",
+
+                left:
+                    "50%",
+
+                transform:
+                    "translateX(-50%)",
+
+                zIndex:
+                    "2147483647",
+
+                background:
+                    "#3a1730",
+
+                color:
+                    "#ff9bce",
+
+                border:
+                    "2px solid #ff69b4",
+
+                borderRadius:
+                    "10px",
+
+                padding:
+                    "12px 18px",
+
+                fontFamily:
+                    "Arial, sans-serif",
+
+                fontSize:
+                    "15px",
+
+                fontWeight:
+                    "bold",
+
+                boxShadow:
+                    "0 4px 20px rgba(0,0,0,0.5)",
+
+                textAlign:
+                    "center",
+
+                pointerEvents:
+                    "none"
+            }
+        );
+
+        document.body.appendChild(
+            notification
+        );
+
+        setTimeout(
+            () => {
+                notification.remove();
+            },
+            10000
+        );
+    }
+
+    function checkForBambiUpdate() {
+        fetch(
+            VERSION_URL,
+            {
+                cache:
+                    "no-store"
+            }
+        )
+            .then(
+                response => {
+                    if (!response.ok) {
+                        throw new Error(
+                            `HTTP ${response.status}`
+                        );
+                    }
+
+                    return response.text();
+                }
+            )
+            .then(
+                source => {
+                    const match =
+                        source.match(
+                            /@version\s+([^\s]+)/i
+                        );
+
+                    if (!match) {
+                        return;
+                    }
+
+                    const remoteVersion =
+                        match[1];
+
+                    if (
+                        compareVersions(
+                            remoteVersion,
+                            VERSION
+                        ) > 0
+                    ) {
+                        showBambiUpdateMessage(
+                            remoteVersion
+                        );
+                    }
+                }
+            )
+            .catch(
+                error => {
+                    console.warn(
+                        "Bambi Obeys: update check failed",
+                        error
+                    );
+                }
+            );
     }
 
     // =========================================================
@@ -240,19 +444,15 @@
     // AUDIO SESSION STATE
     // =========================================================
 
-    // Current BOTH-ear/main track.
-    // While this exists, additional triggers use the
-    // alternating left/right system.
     let mainAudioLayer = null;
 
-    // Remembers the LAST secondary ear used.
+    // Remembers the last secondary ear.
     //
     // -1 = left
     //  1 = right
     //
-    // This intentionally survives main-track endings.
-    // The next secondary trigger always uses the opposite
-    // ear from the last secondary trigger.
+    // We initialize to RIGHT so that the first secondary
+    // trigger uses LEFT.
     let lastSecondaryPan = 1;
 
     let lastTriggerTime = 0;
@@ -829,7 +1029,7 @@
     }
 
     // =========================================================
-    // AUDIO ENGINE
+    // AUDIO
     // =========================================================
 
     function ensureAudioContext() {
@@ -1037,7 +1237,7 @@
             buffer;
 
         // =====================================================
-        // MAIN VS SECONDARY
+        // AUDIO POSITION
         // =====================================================
 
         const isMain =
@@ -1046,19 +1246,19 @@
         let pan = 0;
 
         if (isMain) {
-            // Main track is BOTH ears.
+            // First track of a session = BOTH.
             pan = 0;
         } else if (
             settings.alternateEars
         ) {
-            // ALWAYS use the opposite ear from
-            // the previous secondary trigger.
+            // Always use the opposite ear from
+            // the LAST secondary trigger.
             pan =
                 lastSecondaryPan === -1
                     ? 1
                     : -1;
 
-            // Immediately remember the ear we used.
+            // Remember what we just used.
             lastSecondaryPan =
                 pan;
         } else {
@@ -1152,8 +1352,6 @@
                     layer
                 );
 
-                // Only the MAIN track determines
-                // when a BOTH-ear session ends.
                 if (
                     mainAudioLayer ===
                     layer
@@ -1162,12 +1360,13 @@
                         null;
 
                     // IMPORTANT:
-                    // We DO NOT reset lastSecondaryPan.
+                    // lastSecondaryPan is NOT reset.
                     //
-                    // The last secondary ear is remembered
-                    // across main-track sessions.
+                    // The next secondary trigger after
+                    // this main track ends continues from
+                    // the opposite side of the last one.
                     console.log(
-                        "Bambi Obeys: main track ended. Last secondary ear remembered."
+                        "Bambi Obeys: main track ended. Last secondary ear retained."
                     );
                 }
 
@@ -1229,7 +1428,7 @@
                 ? "[MAIN]"
                 : "[SECONDARY]",
             !isMain
-                ? `next remembered ear: ${
+                ? `last secondary ear: ${
                       lastSecondaryPan === -1
                           ? "left"
                           : "right"
@@ -1418,12 +1617,10 @@
             } catch {}
         }
 
-        // Completely end the main session.
         mainAudioLayer =
             null;
 
-        // Intentionally DO NOT reset lastSecondaryPan.
-        // The last-used ear must be remembered.
+        // Preserve lastSecondaryPan.
     }
 
     // =========================================================
@@ -1695,9 +1892,6 @@
                 continue;
             }
 
-            // Presence is intentionally broadcast.
-            // It contains no target and every Bambi
-            // client can use the player's position.
             sendBambiMessage(
                 null,
                 {
@@ -1809,7 +2003,6 @@
         savePendingRequests();
         saveConnections();
 
-        // Explicit target.
         sendBambiMessage(
             target,
             {
@@ -1851,7 +2044,6 @@
 
         saveConnections();
 
-        // Explicit target.
         sendBambiMessage(
             target,
             {
@@ -1927,9 +2119,6 @@
             return;
         }
 
-        // The target is stored INSIDE the payload.
-        // This makes targeting work even if the game's
-        // Hidden packet itself reaches everyone.
         sendBambiMessage(
             target,
             {
@@ -1964,7 +2153,6 @@
             return false;
         }
 
-        // Presence packets are intentionally broadcast.
         if (
             payload.type ===
             "presence"
@@ -2265,7 +2453,6 @@
                 Player?.MemberNumber
             );
 
-        // Ignore our own chat / whisper.
         if (
             sender ===
             myNumber
@@ -2275,10 +2462,6 @@
 
         const message =
             data.Content.trim();
-
-        // =====================================================
-        // CONNECT
-        // =====================================================
 
         if (
             data.Type === "Whisper" &&
@@ -2314,10 +2497,6 @@
 
             return;
         }
-
-        // =====================================================
-        // DISCONNECT
-        // =====================================================
 
         if (
             data.Type === "Whisper" &&
@@ -4991,6 +5170,7 @@
 
     loadStorage();
     installAudioUnlock();
+    checkForBambiUpdate();
 
     const wait =
         setInterval(
@@ -5073,7 +5253,7 @@
                 );
 
                 console.log(
-                    "Bambi Obeys 1.5.2 loaded successfully."
+                    `Bambi Obeys ${VERSION} loaded successfully.`
                 );
             },
             1000
