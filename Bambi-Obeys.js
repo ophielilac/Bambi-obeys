@@ -17,6 +17,15 @@
     const UPDATE_STORAGE_KEY =
         'bambiObeysLastSeenVersion_v1';
 
+    const UPDATE_NOTIFIED_KEY =
+        'bambiObeysUpdateNotifiedVersion_v1';
+
+    const PENDING_UPDATE_KEY =
+        'bambiObeysPendingUpdateVersion_v1';
+
+    const UPDATE_CHECK_URL =
+        'https://ophielilac.github.io/Bambi-obeys/Bambi-Obeys.js';
+
     const SETTINGS_KEY =
         'bambiObeysSettings_v5';
 
@@ -237,10 +246,7 @@
     function getTriggerURL(index) {
         if (!TRIGGERS[index]) return null;
 
-        return BASE_URL +
-            encodeURIComponent(
-                TRIGGERS[index].file
-            );
+        return BASE_URL + encodeURIComponent(TRIGGERS[index].file);
     }
 
     function getRoomCharacters() {
@@ -271,131 +277,78 @@
 
         if (!target) return null;
 
-        return getRoomCharacters().find(
-            character =>
-                normalizeMemberNumber(
-                    character?.MemberNumber
-                ) === target
-        ) || null;
+        return getRoomCharacters().find(character => {
+            return normalizeMemberNumber(character?.MemberNumber) === target;
+        }) || null;
     }
 
     function getCharacterName(memberNumber) {
-        const character =
-            getCharacter(memberNumber);
+        const character = getCharacter(memberNumber);
 
         if (!character) return 'Unknown';
 
-        return (
-            character.Nickname ||
-            character.Name ||
-            'Unknown'
-        );
+        return character.Nickname || character.Name || 'Unknown';
     }
 
     function isInCurrentRoom(memberNumber) {
-        const target =
-            normalizeMemberNumber(
-                memberNumber
-            );
+        const target = normalizeMemberNumber(memberNumber);
 
         if (!target) return false;
 
-        return getRoomCharacters().some(
-            character =>
-                normalizeMemberNumber(
-                    character?.MemberNumber
-                ) === target
-        );
+        return getRoomCharacters().some(character => {
+            return normalizeMemberNumber(character?.MemberNumber) === target;
+        });
+    }
+
+    function getOwnerNumber() {
+        try {
+            const owner = Number(Player?.OwnerNumber);
+
+            if (Number.isFinite(owner) && owner > 0) {
+                return owner;
+            }
+        } catch {}
+
+        return 0;
     }
 
     function getFriendNumbers() {
         const result = new Set();
 
-        const possibleLists = [
-            Player?.FriendList,
-            Player?.Friends,
-            Player?.FriendNumbers
-        ];
+        try {
+            if (Array.isArray(Player?.FriendList)) {
+                for (const number of Player.FriendList) {
+                    const normalized = normalizeMemberNumber(number);
 
-        for (
-            const list
-            of possibleLists
-        ) {
-            if (!Array.isArray(list)) {
-                continue;
-            }
-
-            for (
-                const entry
-                of list
-            ) {
-                const n =
-                    normalizeMemberNumber(
-                        typeof entry === 'object'
-                            ? entry?.MemberNumber ??
-                              entry?.memberNumber
-                            : entry
-                    );
-
-                if (n) {
-                    result.add(n);
+                    if (normalized) {
+                        result.add(normalized);
+                    }
                 }
             }
-        }
+        } catch {}
 
         return result;
     }
 
-    function getOwnerNumber() {
-        const candidates = [
-            Player?.OwnerNumber,
-            Player?.OwnerMemberNumber,
-            Player?.Owner?.MemberNumber,
-            Player?.Owner
-        ];
-
-        for (
-            const value
-            of candidates
-        ) {
-            const n =
-                normalizeMemberNumber(
-                    value
-                );
-
-            if (n) {
-                return n;
-            }
-        }
-
-        return 0;
-    }
-
     function getWhitelist() {
-        return new Set(
-            String(
-                settings.whitelist || ''
-            )
-            .split(',')
-            .map(
-                item =>
-                    Number(
-                        item.trim()
-                    )
-            )
-            .filter(
-                Number.isFinite
-            )
+        const result = new Set();
+
+        String(settings.whitelist || '')
+            .split(/[\s,;]+/)
+            .map(value => normalizeMemberNumber(value))
             .filter(Boolean)
-        );
+            .forEach(value => result.add(value));
+
+        return result;
     }
 
-    function setStatus(text) {
-        if (
-            statusText
-        ) {
-            statusText.textContent =
-                text || '';
+    function getSetting(key, fallback) {
+        return settings[key] ?? fallback;
+    }
+
+    function setStatus(message) {
+        if (statusText) {
+            statusText.textContent = message || '';
         }
     }
 
@@ -403,124 +356,51 @@
     // STORAGE
     // =========================================================
 
-    function mergeSettings(saved) {
-        if (
-            !saved ||
-            typeof saved !== 'object'
-        ) {
-            return;
-        }
-
-        for (
-            const [
-                key,
-                defaultValue
-            ]
-            of Object.entries(
-                DEFAULT_SETTINGS
-            )
-        ) {
-            if (
-                !Object.prototype.hasOwnProperty.call(
-                    saved,
-                    key
-                )
-            ) {
-                continue;
-            }
-
-            if (
-                key === 'enabledTriggers' &&
-                defaultValue &&
-                typeof defaultValue === 'object' &&
-                !Array.isArray(defaultValue)
-            ) {
-                settings.enabledTriggers =
-                    Object.assign(
-                        {},
-                        defaultValue,
-                        saved.enabledTriggers || {}
-                    );
-            } else {
-                settings[key] =
-                    saved[key];
-            }
-        }
-    }
-
     function loadStorage() {
-        let savedSettings =
-            null;
-
         try {
-            savedSettings =
-                JSON.parse(
-                    localStorage.getItem(
-                        SETTINGS_KEY
-                    )
-                );
+            const savedSettings = localStorage.getItem(SETTINGS_KEY);
 
-            mergeSettings(
-                savedSettings
-            );
+            if (savedSettings) {
+                const parsed = JSON.parse(savedSettings);
+
+                settings = Object.assign(
+                    clone(DEFAULT_SETTINGS),
+                    parsed || {}
+                );
+            }
         } catch (error) {
             console.error(
                 'Bambi Obeys: settings load failed',
                 error
             );
-        }
 
-        for (
-            const trigger
-            of TRIGGERS
-        ) {
-            if (
-                !Object.prototype.hasOwnProperty.call(
-                    settings.enabledTriggers,
-                    trigger.name
-                )
-            ) {
-                settings.enabledTriggers[
-                    trigger.name
-                ] = true;
-            }
+            settings = clone(DEFAULT_SETTINGS);
         }
 
         try {
-            const saved =
-                JSON.parse(
-                    localStorage.getItem(
-                        CONNECTIONS_KEY
-                    )
-                );
+            const savedConnections =
+                localStorage.getItem(CONNECTIONS_KEY);
 
-            if (
-                Array.isArray(saved)
-            ) {
-                connectedUsers.clear();
+            if (savedConnections) {
+                const parsed = JSON.parse(savedConnections);
 
-                for (
-                    const entry
-                    of saved
-                ) {
-                    const memberNumber =
-                        normalizeMemberNumber(
-                            entry?.memberNumber
-                        );
+                if (Array.isArray(parsed)) {
+                    connectedUsers.clear();
 
-                    if (!memberNumber) {
-                        continue;
-                    }
+                    for (const entry of parsed) {
+                        const memberNumber =
+                            normalizeMemberNumber(entry?.memberNumber);
 
-                    connectedUsers.set(
-                        memberNumber,
-                        {
-                            memberNumber,
-                            name:
-                                entry.name ||
-                                'Unknown'
+                        if (memberNumber) {
+                            connectedUsers.set(
+                                memberNumber,
+                                {
+                                    memberNumber,
+                                    name: entry.name || 'Unknown'
+                                }
+                            );
                         }
-                    );
+                    }
                 }
             }
         } catch (error) {
@@ -531,40 +411,29 @@
         }
 
         try {
-            const saved =
-                JSON.parse(
-                    localStorage.getItem(
-                        PENDING_KEY
-                    )
-                );
+            const savedPending =
+                localStorage.getItem(PENDING_KEY);
 
-            if (
-                Array.isArray(saved)
-            ) {
-                pendingRequests.clear();
+            if (savedPending) {
+                const parsed = JSON.parse(savedPending);
 
-                for (
-                    const entry
-                    of saved
-                ) {
-                    const memberNumber =
-                        normalizeMemberNumber(
-                            entry?.memberNumber
-                        );
+                if (Array.isArray(parsed)) {
+                    pendingRequests.clear();
 
-                    if (!memberNumber) {
-                        continue;
-                    }
+                    for (const entry of parsed) {
+                        const memberNumber =
+                            normalizeMemberNumber(entry?.memberNumber);
 
-                    pendingRequests.set(
-                        memberNumber,
-                        {
-                            memberNumber,
-                            name:
-                                entry.name ||
-                                'Unknown'
+                        if (memberNumber) {
+                            pendingRequests.set(
+                                memberNumber,
+                                {
+                                    memberNumber,
+                                    name: entry.name || 'Unknown'
+                                }
+                            );
                         }
-                    );
+                    }
                 }
             }
         } catch (error) {
@@ -575,26 +444,21 @@
         }
 
         try {
-            const saved =
-                JSON.parse(
-                    localStorage.getItem(
-                        SLEEP_KEY
-                    )
-                );
+            const savedSleep =
+                localStorage.getItem(SLEEP_KEY);
 
-            if (
-                saved?.active &&
-                Number(
-                    saved.startedAt
-                ) > 0
-            ) {
-                sleepState.active =
-                    true;
+            if (savedSleep) {
+                const parsed = JSON.parse(savedSleep);
 
-                sleepState.startedAt =
-                    Number(
-                        saved.startedAt
+                if (parsed && typeof parsed === 'object') {
+                    sleepState = Object.assign(
+                        {
+                            active: false,
+                            startedAt: 0
+                        },
+                        parsed
                     );
+                }
             }
         } catch (error) {
             console.error(
@@ -608,9 +472,7 @@
         try {
             localStorage.setItem(
                 SETTINGS_KEY,
-                JSON.stringify(
-                    settings
-                )
+                JSON.stringify(settings)
             );
 
             announcePresence();
@@ -626,11 +488,7 @@
         try {
             localStorage.setItem(
                 CONNECTIONS_KEY,
-                JSON.stringify(
-                    [
-                        ...connectedUsers.values()
-                    ]
-                )
+                JSON.stringify([...connectedUsers.values()])
             );
         } catch (error) {
             console.error(
@@ -644,11 +502,7 @@
         try {
             localStorage.setItem(
                 PENDING_KEY,
-                JSON.stringify(
-                    [
-                        ...pendingRequests.values()
-                    ]
-                )
+                JSON.stringify([...pendingRequests.values()])
             );
         } catch (error) {
             console.error(
@@ -662,9 +516,7 @@
         try {
             localStorage.setItem(
                 SLEEP_KEY,
-                JSON.stringify(
-                    sleepState
-                )
+                JSON.stringify(sleepState)
             );
         } catch (error) {
             console.error(
@@ -675,144 +527,214 @@
     }
 
     // =========================================================
-    // LSCG-STYLE VERSION CHECK / UPDATE MESSAGE
+    // VERSION / UPDATE NOTIFICATIONS
     // =========================================================
 
-    function checkVersionUpdate() {
-        let previousVersion =
-            null;
+    function compareVersions(a, b) {
+        const left = String(a || '')
+            .replace(/^v/i, '')
+            .split('.')
+            .map(part => parseInt(part, 10) || 0);
 
+        const right = String(b || '')
+            .replace(/^v/i, '')
+            .split('.')
+            .map(part => parseInt(part, 10) || 0);
+
+        const length = Math.max(left.length, right.length);
+
+        for (let i = 0; i < length; i += 1) {
+            const l = left[i] || 0;
+            const r = right[i] || 0;
+
+            if (l > r) return 1;
+            if (l < r) return -1;
+        }
+
+        return 0;
+    }
+
+    function getStoredValue(key) {
         try {
-            previousVersion =
-                localStorage.getItem(
-                    UPDATE_STORAGE_KEY
-                );
+            return localStorage.getItem(key);
         } catch (error) {
             console.error(
-                'Bambi Obeys: version read failed',
+                `Bambi Obeys: failed to read ${key}`,
                 error
             );
+
+            return null;
         }
+    }
 
-        // First install:
-        // remember the version.
-        //
-        // If an older Bambi installation
-        // is already present, treat this as
-        // an update from the previous build.
-        if (!previousVersion) {
-            let olderInstallDetected =
-                false;
-
-            try {
-                olderInstallDetected =
-                    Boolean(
-                        localStorage.getItem(
-                            SETTINGS_KEY
-                        ) ||
-                        localStorage.getItem(
-                            CONNECTIONS_KEY
-                        ) ||
-                        localStorage.getItem(
-                            PENDING_KEY
-                        )
-                    );
-            } catch {}
-
-            if (
-                olderInstallDetected
-            ) {
-                showUpdateMessage(
-                    '1.5.6',
-                    BAMBI_VERSION
-                );
-            }
-
-            try {
-                localStorage.setItem(
-                    UPDATE_STORAGE_KEY,
-                    BAMBI_VERSION
-                );
-            } catch (error) {
-                console.error(
-                    'Bambi Obeys: version save failed',
-                    error
-                );
-            }
-
-            return;
-        }
-
-        if (
-            previousVersion ===
-            BAMBI_VERSION
-        ) {
-            return;
-        }
-
-        showUpdateMessage(
-            previousVersion,
-            BAMBI_VERSION
-        );
-
+    function setStoredValue(key, value) {
         try {
-            localStorage.setItem(
-                UPDATE_STORAGE_KEY,
-                BAMBI_VERSION
-            );
+            localStorage.setItem(key, value);
+            return true;
         } catch (error) {
             console.error(
-                'Bambi Obeys: version save failed',
+                `Bambi Obeys: failed to save ${key}`,
+                error
+            );
+
+            return false;
+        }
+    }
+
+    function removeStoredValue(key) {
+        try {
+            localStorage.removeItem(key);
+        } catch (error) {
+            console.error(
+                `Bambi Obeys: failed to remove ${key}`,
                 error
             );
         }
     }
 
-    function showUpdateMessage(
-        previousVersion,
-        currentVersion
-    ) {
-        const message =
-            "bzzzt Bambi! There's an update! refresh like a good girl~";
+    function sendLocalMessage(message) {
+        if (typeof ChatRoomSendLocal !== 'function') {
+            console.log(`Bambi Obeys: ${message}`);
+            return false;
+        }
 
-        if (
-            typeof ServerAccountBeep !==
-            'function'
-        ) {
-            console.log(
-                `Bambi Obeys updated ${previousVersion || '?'} -> ${currentVersion}: ${message}`
+        try {
+            const isLightTheme =
+                typeof Player !== 'undefined' &&
+                Player?.ChatSettings?.ColorTheme?.includes('Light');
+
+            const backgroundColor = isLightTheme
+                ? '#D7F6E9'
+                : '#23523E';
+
+            const escaped = String(message)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+
+            ChatRoomSendLocal(
+                `<div style='background-color:${backgroundColor};'>${escaped}</div>`
+            );
+
+            return true;
+        } catch (error) {
+            console.error(
+                'Bambi Obeys: local chat message failed',
+                error
+            );
+
+            return false;
+        }
+    }
+
+    function checkVersionUpdate() {
+        const previousVersion =
+            getStoredValue(UPDATE_STORAGE_KEY);
+
+        const pendingVersion =
+            getStoredValue(PENDING_UPDATE_KEY);
+
+        // First install: simply remember the currently running version.
+        if (!previousVersion) {
+            setStoredValue(
+                UPDATE_STORAGE_KEY,
+                BAMBI_VERSION
             );
 
             return;
         }
 
+        // The new code is now running.
+        // If this version was previously announced as an available
+        // update, tell the user that the update completed.
+        if (
+            compareVersions(
+                BAMBI_VERSION,
+                previousVersion
+            ) > 0 &&
+            pendingVersion &&
+            compareVersions(
+                BAMBI_VERSION,
+                pendingVersion
+            ) >= 0
+        ) {
+            sendLocalMessage(
+                'Update complete! Good girl~'
+            );
+
+            removeStoredValue(
+                PENDING_UPDATE_KEY
+            );
+
+            removeStoredValue(
+                UPDATE_NOTIFIED_KEY
+            );
+        }
+
+        setStoredValue(
+            UPDATE_STORAGE_KEY,
+            BAMBI_VERSION
+        );
+    }
+
+    async function checkForNewVersion() {
         try {
-            ServerAccountBeep({
-                MemberNumber:
-                    Player?.MemberNumber ||
-                    -1,
+            const response = await fetch(
+                `${UPDATE_CHECK_URL}?versionCheck=${Date.now()}`,
+                {
+                    cache: 'no-store',
+                    credentials: 'omit'
+                }
+            );
 
-                MemberName:
-                    PRODUCT_NAME,
+            if (!response.ok) return;
 
-                ChatRoomName:
-                    'Bambi Obeys Update',
+            const source = await response.text();
 
-                Private:
-                    true,
+            const match = source.match(
+                /const\s+BAMBI_VERSION\s*=\s*['"]([^'"]+)['"]/i
+            );
 
-                Message:
-                    message,
+            if (!match) return;
 
-                ChatRoomSpace:
-                    '',
+            const latestVersion = match[1];
 
-                BeepType:
-                    ''
-            });
+            if (
+                compareVersions(
+                    latestVersion,
+                    BAMBI_VERSION
+                ) <= 0
+            ) {
+                return;
+            }
+
+            const notifiedVersion =
+                getStoredValue(
+                    UPDATE_NOTIFIED_KEY
+                );
+
+            if (notifiedVersion === latestVersion) {
+                return;
+            }
+
+            sendLocalMessage(
+                "bzzzt Bambi! There's an update! refresh like a good girl~"
+            );
+
+            setStoredValue(
+                UPDATE_NOTIFIED_KEY,
+                latestVersion
+            );
+
+            setStoredValue(
+                PENDING_UPDATE_KEY,
+                latestVersion
+            );
         } catch (error) {
-            console.error(
-                'Bambi Obeys: update message failed',
+            console.debug(
+                'Bambi Obeys: version check failed',
                 error
             );
         }
@@ -824,38 +746,25 @@
 
     function registerBambiMod() {
         if (
-            typeof bcModSdk ===
-            'undefined' ||
+            typeof bcModSdk === 'undefined' ||
             !bcModSdk ||
-            typeof bcModSdk.registerMod !==
-            'function'
+            typeof bcModSdk.registerMod !== 'function'
         ) {
             return false;
         }
 
-        if (
-            bambiMod
-        ) {
-            return true;
-        }
+        if (bambiMod) return true;
 
         try {
-            bambiMod =
-                bcModSdk.registerMod({
-                    name:
-                        'BambiObeys',
+            bambiMod = bcModSdk.registerMod({
+                name: 'BambiObeys',
+                fullName: 'Bambi Obeys',
+                version: BAMBI_VERSION,
+                repository:
+                    'https://github.com/ophielilac/Bambi-obeys'
+            });
 
-                    fullName:
-                        PRODUCT_NAME,
-
-                    version:
-                        BAMBI_VERSION,
-
-                    repository:
-                        'https://github.com/ophielilac/Bambi-obeys'
-                });
-
-            return true;
+            return Boolean(bambiMod);
         } catch (error) {
             console.error(
                 'Bambi Obeys: ModSDK registration failed',
@@ -871,30 +780,23 @@
     // =========================================================
 
     function ensureAudioContext() {
-        if (
-            audioContext
-        ) {
+        if (audioContext) {
+            if (audioContext.state === 'suspended') {
+                audioContext.resume().catch(() => {});
+            }
+
             return audioContext;
-        }
-
-        const AudioContextCtor =
-            window.AudioContext ||
-            window.webkitAudioContext;
-
-        if (
-            !AudioContextCtor
-        ) {
-            return null;
         }
 
         try {
             audioContext =
-                new AudioContextCtor();
+                new (window.AudioContext ||
+                    window.webkitAudioContext)();
 
             return audioContext;
         } catch (error) {
             console.error(
-                'Bambi Obeys: audio context creation failed',
+                'Bambi Obeys: AudioContext creation failed',
                 error
             );
 
@@ -902,812 +804,492 @@
         }
     }
 
-    function unlockAudio() {
-        const context =
-            ensureAudioContext();
-
-        if (!context) {
-            return;
-        }
-
-        try {
-            if (
-                context.state ===
-                'suspended'
-            ) {
-                context.resume().catch(
-                    () => {}
-                );
-            }
-        } catch {}
-    }
-
     function installAudioUnlock() {
-        const handler =
-            () =>
-                unlockAudio();
+        const unlock = () => {
+            const context = ensureAudioContext();
+
+            if (context?.state === 'suspended') {
+                context.resume().catch(() => {});
+            }
+        };
 
         document.addEventListener(
-            'pointerdown',
-            handler,
+            'click',
+            unlock,
             {
-                passive:
-                    true
+                passive: true
             }
         );
 
         document.addEventListener(
             'keydown',
-            handler,
+            unlock,
             {
-                passive:
-                    true
+                passive: true
             }
         );
     }
 
-    async function getAudioBuffer(
-        index
-    ) {
-        if (
-            audioBuffers.has(
-                index
-            )
-        ) {
-            return audioBuffers.get(
-                index
-            );
+    async function loadAudioBuffer(index) {
+        if (audioBuffers.has(index)) {
+            return audioBuffers.get(index);
         }
 
-        if (
-            loadingBuffers.has(
-                index
-            )
-        ) {
-            return loadingBuffers.get(
-                index
-            );
+        if (loadingBuffers.has(index)) {
+            return loadingBuffers.get(index);
         }
 
-        const url =
-            getTriggerURL(
-                index
-            );
+        const url = getTriggerURL(index);
 
-        if (!url) {
-            throw new Error(
-                'Invalid trigger index'
-            );
-        }
+        if (!url) return null;
 
-        const promise =
-            (async () => {
-                const response =
-                    await fetch(
-                        url,
-                        {
-                            cache:
-                                'force-cache'
-                        }
-                    );
+        const context = ensureAudioContext();
 
-                if (
-                    !response.ok
-                ) {
+        if (!context) return null;
+
+        const promise = (async () => {
+            try {
+                const response = await fetch(
+                    url,
+                    {
+                        cache: 'force-cache'
+                    }
+                );
+
+                if (!response.ok) {
                     throw new Error(
                         `HTTP ${response.status}`
                     );
                 }
 
-                const data =
+                const arrayBuffer =
                     await response.arrayBuffer();
 
-                const context =
-                    ensureAudioContext();
-
-                if (!context) {
-                    throw new Error(
-                        'Web Audio API unavailable'
-                    );
-                }
-
-                const buffer =
+                const decoded =
                     await context.decodeAudioData(
-                        data.slice(0)
+                        arrayBuffer
                     );
 
                 audioBuffers.set(
                     index,
-                    buffer
+                    decoded
                 );
 
-                return buffer;
-            })();
+                return decoded;
+            } catch (error) {
+                console.error(
+                    'Bambi Obeys: audio load failed',
+                    TRIGGERS[index]?.name,
+                    error
+                );
 
-        loadingBuffers.set(
-            index,
-            promise
-        );
+                return null;
+            } finally {
+                loadingBuffers.delete(index);
+            }
+        })();
 
-        try {
-            return await promise;
-        } finally {
-            loadingBuffers.delete(
-                index
-            );
-        }
+        loadingBuffers.set(index, promise);
+
+        return promise;
     }
 
-    function stopLayer(
-        layer
-    ) {
-        if (!layer) {
+    function applyFade(gainNode, from, to, duration) {
+        const context = ensureAudioContext();
+
+        if (!context || !gainNode) return;
+
+        const start = context.currentTime;
+
+        gainNode.gain.cancelScheduledValues(start);
+        gainNode.gain.setValueAtTime(from, start);
+
+        if (duration <= 0) {
+            gainNode.gain.setValueAtTime(
+                to,
+                start
+            );
+
             return;
         }
 
-        try {
-            const context =
-                ensureAudioContext();
-
-            if (context) {
-                const fade =
-                    Math.max(
-                        0.01,
-                        Number(
-                            settings.fadeOutMs
-                        ) / 1000
-                    );
-
-                const t =
-                    context.currentTime;
-
-                layer.gain.gain.cancelScheduledValues(
-                    t
-                );
-
-                layer.gain.gain.setValueAtTime(
-                    Math.max(
-                        0,
-                        Number(
-                            layer.gain.gain.value
-                        ) || 0
-                    ),
-                    t
-                );
-
-                layer.gain.gain.linearRampToValueAtTime(
-                    0,
-                    t + fade
-                );
-
-                layer.source.stop(
-                    t + fade + 0.02
-                );
-
-                return;
-            }
-        } catch {}
-
-        try {
-            layer.source.stop();
-        } catch {}
+        gainNode.gain.linearRampToValueAtTime(
+            to,
+            start + duration / 1000
+        );
     }
 
-    function trimActiveLayersIfNeeded() {
-        const limit =
-            Math.max(
-                1,
-                Number(
-                    settings.maxSimultaneous
-                ) || 1
-            );
+    function stopLayer(layer, fadeOutMs) {
+        if (!layer || layer.stopped) return;
 
-        while (
-            activeLayers.size >=
-            limit
-        ) {
-            const oldest =
-                activeLayers.values()
-                    .next()
-                    .value;
+        layer.stopped = true;
 
-            if (!oldest) {
-                break;
-            }
-
-            stopLayer(
-                oldest
-            );
-
-            activeLayers.delete(
-                oldest
-            );
-
-            if (
-                mainAudioLayer ===
-                oldest
-            ) {
-                mainAudioLayer =
-                    null;
-            }
-        }
-    }
-
-    async function playLayer(
-        index
-    ) {
-        const context =
-            ensureAudioContext();
+        const context = audioContext;
 
         if (!context) {
+            try {
+                layer.source.stop();
+            } catch {}
+
+            activeLayers.delete(layer);
+
+            if (layer.isMain && mainAudioLayer === layer) {
+                mainAudioLayer = null;
+            }
+
+            return;
+        }
+
+        const duration = Math.max(
+            0,
+            Number(fadeOutMs) || 0
+        );
+
+        try {
+            applyFade(
+                layer.gain,
+                layer.gain.gain.value,
+                0,
+                duration
+            );
+
+            layer.source.stop(
+                context.currentTime +
+                duration / 1000
+            );
+        } catch {}
+
+        setTimeout(
+            () => {
+                activeLayers.delete(layer);
+
+                if (
+                    layer.isMain &&
+                    mainAudioLayer === layer
+                ) {
+                    mainAudioLayer = null;
+                }
+            },
+            duration + 50
+        );
+    }
+
+    function stopAllAudio() {
+        for (const layer of [...activeLayers]) {
+            stopLayer(
+                layer,
+                settings.fadeOutMs
+            );
+        }
+
+        activeLayers.clear();
+        mainAudioLayer = null;
+    }
+
+    async function playTrigger(index) {
+        const trigger = TRIGGERS[index];
+
+        if (!trigger) return false;
+
+        const context = ensureAudioContext();
+
+        if (!context) return false;
+
+        if (context.state === 'suspended') {
+            try {
+                await context.resume();
+            } catch {}
+        }
+
+        const buffer =
+            await loadAudioBuffer(index);
+
+        if (!buffer) return false;
+
+        // -----------------------------------------------------
+        // Limits / cooldown
+        // -----------------------------------------------------
+
+        const currentTime = now();
+
+        if (
+            settings.cooldownMs > 0 &&
+            currentTime - lastTriggerTime <
+                settings.cooldownMs
+        ) {
             return false;
         }
 
-        try {
-            if (
-                context.state ===
-                'suspended'
-            ) {
-                await context.resume();
-            }
-        } catch {}
+        const minuteAgo =
+            currentTime - 60000;
 
-        trimActiveLayersIfNeeded();
-
-        let buffer;
-
-        try {
-            buffer =
-                await getAudioBuffer(
-                    index
-                );
-        } catch (error) {
-            console.error(
-                'Bambi Obeys: failed to load trigger',
-                TRIGGERS[index]?.name,
-                error
+        triggerHistory =
+            triggerHistory.filter(
+                timestamp => timestamp >= minuteAgo
             );
 
+        if (
+            settings.maxTriggersPerMinute > 0 &&
+            triggerHistory.length >=
+                settings.maxTriggersPerMinute
+        ) {
             return false;
+        }
+
+        lastTriggerTime = currentTime;
+        triggerHistory.push(currentTime);
+
+        // -----------------------------------------------------
+        // Decide whether this is the main track or a secondary
+        // -----------------------------------------------------
+
+        const isMain =
+            mainAudioLayer === null;
+
+        if (
+            activeLayers.size >=
+            Number(settings.maxSimultaneous)
+        ) {
+            if (!isMain) {
+                return false;
+            }
+
+            const oldest =
+                [...activeLayers][0];
+
+            if (oldest) {
+                stopLayer(
+                    oldest,
+                    settings.fadeOutMs
+                );
+            }
         }
 
         const source =
             context.createBufferSource();
 
-        source.buffer =
-            buffer;
+        source.buffer = buffer;
 
         const gain =
             context.createGain();
 
-        const panner =
-            context.createStereoPanner();
-
-        const isMain =
-            !mainAudioLayer;
-
-        let pan =
-            0;
-
-        let initialGain =
-            1;
-
-        if (
-            !isMain
-        ) {
-            if (
-                settings.alternateEars
-            ) {
-                lastSecondaryPan =
-                    lastSecondaryPan ===
-                    1
-                        ? -1
-                        : 1;
-
-                pan =
-                    lastSecondaryPan;
-            } else {
-                pan =
-                    0;
-            }
-
-            initialGain =
-                Math.max(
-                    0,
-                    Math.min(
-                        1,
-                        Number(
-                            settings.secondaryVolume
-                        )
-                    )
-                );
-        }
-
-        panner.pan.value =
-            pan;
-
-        source.connect(
-            gain
-        );
-
-        gain.connect(
-            panner
-        );
-
-        panner.connect(
-            context.destination
-        );
-
-        const fadeIn =
-            Math.max(
-                0,
-                Number(
-                    settings.fadeInMs
-                ) / 1000
-            );
-
-        const fadeOut =
-            Math.max(
-                0,
-                Number(
-                    settings.fadeOutMs
-                ) / 1000
-            );
-
-        const startTime =
-            context.currentTime;
+        const finalGain =
+            isMain
+                ? 1
+                : Number(settings.secondaryVolume);
 
         gain.gain.setValueAtTime(
             0,
-            startTime
+            context.currentTime
         );
 
-        gain.gain.linearRampToValueAtTime(
-            initialGain,
-            startTime +
-                Math.max(
-                    0.01,
-                    fadeIn
-                )
+        source.connect(gain);
+
+        let output = gain;
+        let panner = null;
+
+        if (!isMain && settings.alternateEars) {
+            if (lastSecondaryPan >= 0) {
+                lastSecondaryPan = -1;
+            } else {
+                lastSecondaryPan = 1;
+            }
+
+            panner =
+                context.createStereoPanner();
+
+            panner.pan.setValueAtTime(
+                lastSecondaryPan,
+                context.currentTime
+            );
+
+            gain.connect(panner);
+
+            output = panner;
+        }
+
+        output.connect(
+            context.destination
         );
 
         const layer = {
             source,
             gain,
             panner,
-            index,
-            isMain
+            isMain,
+            stopped: false
         };
 
-        activeLayers.add(
-            layer
-        );
+        activeLayers.add(layer);
 
-        if (
-            isMain
-        ) {
-            mainAudioLayer =
-                layer;
+        if (isMain) {
+            mainAudioLayer = layer;
         }
 
-        source.onended =
-            () => {
-                activeLayers.delete(
-                    layer
-                );
-
-                if (
-                    mainAudioLayer ===
-                    layer
-                ) {
-                    mainAudioLayer =
-                        null;
-                }
-
-                try {
-                    gain.disconnect();
-                    panner.disconnect();
-                    source.disconnect();
-                } catch {}
-            };
-
-        source.start();
-
-        if (
-            fadeOut > 0 &&
-            buffer.duration >
-                fadeOut
-        ) {
-            const stopAt =
-                startTime +
-                Math.max(
-                    0,
-                    buffer.duration -
-                        fadeOut
-                );
-
-            gain.gain.setValueAtTime(
-                initialGain,
-                stopAt
-            );
-
-            gain.gain.linearRampToValueAtTime(
-                0,
-                stopAt +
-                    fadeOut
-            );
-        }
-
-        console.log(
-            `Bambi Obeys: ${isMain ? 'main' : 'secondary'} trigger`,
-            TRIGGERS[index].name,
-            isMain
-                ? ''
-                : pan > 0
-                    ? '(right)'
-                    : pan < 0
-                        ? '(left)'
-                        : '(center)'
-        );
-
-        return true;
-    }
-
-    function triggerAllowedLocally(
-        index
-    ) {
-        const trigger =
-            TRIGGERS[index];
-
-        if (!trigger) {
-            return false;
-        }
-
-        if (
-            settings.enabledTriggers &&
-            settings.enabledTriggers[
-                trigger.name
-            ] === false
-        ) {
-            return false;
-        }
-
-        const cooldown =
+        const fadeIn =
             Math.max(
                 0,
-                Number(
-                    settings.cooldownMs
-                ) || 0
+                Number(settings.fadeInMs) || 0
             );
 
-        if (
-            cooldown > 0 &&
-            now() -
-                lastTriggerTime <
-                cooldown
-        ) {
+        applyFade(
+            gain,
+            0,
+            finalGain,
+            fadeIn
+        );
+
+        source.onended = () => {
+            activeLayers.delete(layer);
+
+            if (
+                layer.isMain &&
+                mainAudioLayer === layer
+            ) {
+                mainAudioLayer = null;
+            }
+        };
+
+        try {
+            source.start();
+            return true;
+        } catch (error) {
+            activeLayers.delete(layer);
+
+            if (
+                layer.isMain &&
+                mainAudioLayer === layer
+            ) {
+                mainAudioLayer = null;
+            }
+
+            console.error(
+                'Bambi Obeys: audio playback failed',
+                error
+            );
+
             return false;
         }
-
-        const minute =
-            60 * 1000;
-
-        triggerHistory =
-            triggerHistory.filter(
-                timestamp =>
-                    now() -
-                        timestamp <
-                    minute
-            );
-
-        const limit =
-            Math.max(
-                1,
-                Number(
-                    settings.maxTriggersPerMinute
-                ) || 1
-            );
-
-        return (
-            triggerHistory.length <
-            limit
-        );
     }
 
-    async function playTrigger(
-        index,
-        options = {}
-    ) {
-        const trigger =
-            TRIGGERS[index];
+    // =========================================================
+    // SLEEP / AUTO WAKE
+    // =========================================================
 
-        if (!trigger) {
-            return false;
+    function cancelSleepTimer() {
+        if (sleepTimer) {
+            clearTimeout(sleepTimer);
+            sleepTimer = null;
         }
+    }
+
+    function setSleepState(active) {
+        sleepState.active = Boolean(active);
+        sleepState.startedAt =
+            active ? now() : 0;
+
+        saveSleepState();
+        scheduleRemainingWake();
+    }
+
+    function scheduleRemainingWake() {
+        cancelSleepTimer();
 
         if (
-            !options.ignoreLocalSafety &&
-            !triggerAllowedLocally(
-                index
-            )
+            !settings.autoWakeEnabled ||
+            !settings.autoWakeMinutes ||
+            settings.autoWakeMinutes <= 0 ||
+            !sleepState.active ||
+            !sleepState.startedAt
         ) {
-            console.log(
-                'Bambi Obeys: trigger blocked by local limits/safety:',
-                trigger.name
+            return;
+        }
+
+        const duration =
+            Number(settings.autoWakeMinutes) *
+            60 *
+            1000;
+
+        const elapsed =
+            now() - Number(
+                sleepState.startedAt
             );
 
-            return false;
-        }
+        const remaining =
+            duration - elapsed;
 
-        lastTriggerTime =
-            now();
-
-        triggerHistory.push(
-            lastTriggerTime
-        );
-
-        if (
-            options.trackSleep !==
-            false
-        ) {
-            const sleepIndex =
-                triggerIndexByName(
-                    'Bambi sleep'
-                );
+        if (remaining <= 0) {
+            setSleepState(false);
 
             const wakeIndex =
                 triggerIndexByName(
                     'Bambi wake and obey'
                 );
 
-            if (
-                index ===
-                sleepIndex
-            ) {
-                startAutoWakeTimer();
-            } else if (
-                index ===
-                wakeIndex
-            ) {
-                cancelAutoWakeTimer();
+            if (wakeIndex >= 0) {
+                playTrigger(wakeIndex);
             }
-        }
 
-        return playLayer(
-            index
-        );
-    }
-
-    function stopAllLayers() {
-        const layers =
-            [
-                ...activeLayers
-            ];
-
-        for (
-            const layer
-            of layers
-        ) {
-            stopLayer(
-                layer
-            );
-        }
-
-        activeLayers.clear();
-        mainAudioLayer =
-            null;
-
-        setStatus(
-            'Stopped all Bambi audio.'
-        );
-    }
-
-    // =========================================================
-    // AUTO WAKE
-    // =========================================================
-
-    function startAutoWakeTimer() {
-        cancelAutoWakeTimer(
-            false
-        );
-
-        sleepState.active =
-            true;
-
-        sleepState.startedAt =
-            now();
-
-        saveSleepState();
-
-        scheduleRemainingWake();
-    }
-
-    function cancelAutoWakeTimer(
-        save = true
-    ) {
-        if (
-            sleepTimer
-        ) {
-            clearTimeout(
-                sleepTimer
-            );
-
-            sleepTimer =
-                null;
-        }
-
-        sleepState.active =
-            false;
-
-        sleepState.startedAt =
-            0;
-
-        if (
-            save
-        ) {
-            saveSleepState();
-        }
-    }
-
-    function scheduleRemainingWake() {
-        if (
-            sleepTimer
-        ) {
-            clearTimeout(
-                sleepTimer
-            );
-
-            sleepTimer =
-                null;
-        }
-
-        if (
-            !sleepState.active ||
-            !settings.autoWakeEnabled ||
-            Number(
-                settings.autoWakeMinutes
-            ) <= 0
-        ) {
             return;
         }
 
-        const total =
-            Math.max(
-                0,
-                Number(
-                    settings.autoWakeMinutes
-                )
-            ) *
-            60 *
-            1000;
+        sleepTimer = setTimeout(
+            () => {
+                sleepTimer = null;
 
-        const elapsed =
-            now() -
-            sleepState.startedAt;
-
-        const remaining =
-            Math.max(
-                0,
-                total -
-                    elapsed
-            );
-
-        if (
-            remaining <= 0
-        ) {
-            performAutoWake();
-            return;
-        }
-
-        sleepTimer =
-            setTimeout(
-                performAutoWake,
-                remaining
-            );
-    }
-
-    function performAutoWake() {
-        if (
-            !sleepState.active
-        ) {
-            return;
-        }
-
-        const wakeIndex =
-            triggerIndexByName(
-                'Bambi wake and obey'
-            );
-
-        sleepState.active =
-            false;
-
-        sleepState.startedAt =
-            0;
-
-        saveSleepState();
-
-        if (
-            sleepTimer
-        ) {
-            clearTimeout(
-                sleepTimer
-            );
-
-            sleepTimer =
-                null;
-        }
-
-        if (
-            wakeIndex >=
-            0
-        ) {
-            playTrigger(
-                wakeIndex,
-                {
-                    ignoreLocalSafety:
-                        false,
-
-                    trackSleep:
-                        false
+                if (!sleepState.active) {
+                    return;
                 }
-            );
-        }
+
+                setSleepState(false);
+
+                const wakeIndex =
+                    triggerIndexByName(
+                        'Bambi wake and obey'
+                    );
+
+                if (wakeIndex >= 0) {
+                    playTrigger(wakeIndex);
+                }
+            },
+            remaining
+        );
     }
 
     // =========================================================
     // AUTHORITY
     // =========================================================
 
-    function canTrigger(
-        senderMemberNumber
-    ) {
+    function canTrigger(senderMemberNumber) {
         const sender =
             normalizeMemberNumber(
                 senderMemberNumber
             );
 
-        if (!sender) {
-            return false;
-        }
+        if (!sender) return false;
 
         const whitelist =
             getWhitelist();
 
-        if (
-            whitelist.has(
-                sender
-            )
-        ) {
+        if (whitelist.has(sender)) {
             return true;
         }
 
-        switch (
-            settings.authorityMode
-        ) {
+        switch (settings.authorityMode) {
             case 'owner':
-                return (
-                    sender ===
-                    getOwnerNumber()
-                );
+                return sender === getOwnerNumber();
 
             case 'friends':
-                return getFriendNumbers()
-                    .has(
-                        sender
-                    );
+                return getFriendNumbers().has(sender);
 
             case 'connected':
-                return connectedUsers.has(
-                    sender
-                );
+                return connectedUsers.has(sender);
 
             case 'anyone':
                 return true;
 
             default:
-                return connectedUsers.has(
-                    sender
-                );
+                return connectedUsers.has(sender);
         }
     }
 
@@ -1715,14 +1297,8 @@
     // NETWORK
     // =========================================================
 
-    function sendWhisper(
-        memberNumber,
-        content
-    ) {
-        if (
-            typeof ServerSend !==
-            'function'
-        ) {
+    function sendWhisper(memberNumber, content) {
+        if (typeof ServerSend !== 'function') {
             return false;
         }
 
@@ -1730,12 +1306,8 @@
             ServerSend(
                 'ChatRoomChat',
                 {
-                    Content:
-                        content,
-
-                    Type:
-                        'Whisper',
-
+                    Content: content,
+                    Type: 'Whisper',
                     Target:
                         normalizeMemberNumber(
                             memberNumber
@@ -1758,28 +1330,19 @@
         targetMemberNumber,
         payload
     ) {
-        if (
-            typeof ServerSend !==
-            'function'
-        ) {
+        if (typeof ServerSend !== 'function') {
             return false;
         }
 
         try {
             const packet = {
-                Type:
-                    'Hidden',
-
-                Content:
-                    PROTOCOL,
-
+                Type: 'Hidden',
+                Content: PROTOCOL,
                 Sender:
                     Player?.MemberNumber,
-
                 Dictionary: [
                     {
-                        message:
-                            payload
+                        message: payload
                     }
                 ]
             };
@@ -1789,11 +1352,8 @@
                     targetMemberNumber
                 );
 
-            if (
-                target
-            ) {
-                packet.Target =
-                    target;
+            if (target) {
+                packet.Target = target;
             }
 
             ServerSend(
@@ -1818,38 +1378,21 @@
                 Player?.MemberNumber
             );
 
-        if (!myNumber) {
-            return;
-        }
+        if (!myNumber) return;
 
-        // One broadcast packet is enough.
         sendBambiMessage(
             null,
             {
-                type:
-                    'presence',
-
-                memberNumber:
-                    myNumber,
-
-                name:
+                type: 'presence',
+                version: BAMBI_VERSION,
+                name: Player?.Nickname ||
                     Player?.Name ||
-                    'Bambi',
-
-                labelXOffset:
-                    Number(
-                        settings.labelXOffset
-                    ),
-
-                labelYOffset:
-                    Number(
-                        settings.labelYOffset
-                    )
+                    'Bambi'
             }
         );
     }
 
-    function requestConnection(
+    function sendConnectionRequest(
         memberNumber
     ) {
         const target =
@@ -1857,305 +1400,87 @@
                 memberNumber
             );
 
-        const myNumber =
-            normalizeMemberNumber(
-                Player?.MemberNumber
-            );
+        if (!target) return false;
 
-        if (
-            !target ||
-            target ===
-            myNumber
-        ) {
-            setStatus(
-                'You cannot connect to yourself.'
-            );
-
-            return;
-        }
-
-        if (
-            connectedUsers.has(
-                target
-            )
-        ) {
-            setStatus(
-                `${getCharacterName(target)} is already connected.`
-            );
-
-            return;
-        }
-
-        if (
-            sendWhisper(
-                target,
-                CONNECT_COMMAND
-            )
-        ) {
-            setStatus(
-                `Connect request sent to ${getCharacterName(target)}`
-            );
-        }
+        return sendWhisper(
+            target,
+            CONNECT_COMMAND
+        );
     }
 
-    function acceptConnection(
-        memberNumber
-    ) {
+    function disconnectUser(memberNumber) {
         const target =
             normalizeMemberNumber(
                 memberNumber
             );
 
-        const myNumber =
+        if (!target) return false;
+
+        sendWhisper(
+            target,
+            DISCONNECT_COMMAND
+        );
+
+        connectedUsers.delete(target);
+        saveConnections();
+
+        refreshAllUI();
+
+        return true;
+    }
+
+    function acceptConnection(memberNumber) {
+        const target =
             normalizeMemberNumber(
-                Player?.MemberNumber
+                memberNumber
             );
 
-        if (
-            !target ||
-            target ===
-                myNumber
-        ) {
-            return;
-        }
+        if (!target) return false;
 
         const name =
-            pendingRequests.get(
-                target
-            )?.name ||
-            getCharacterName(
-                target
-            );
-
-        pendingRequests.delete(
-            target
-        );
+            getCharacterName(target);
 
         connectedUsers.set(
             target,
             {
-                memberNumber:
-                    target,
-
+                memberNumber: target,
                 name
             }
         );
 
-        savePendingRequests();
+        pendingRequests.delete(target);
+
         saveConnections();
+        savePendingRequests();
 
         sendBambiMessage(
             target,
             {
-                type:
-                    'connection_accepted',
-
-                targetMemberNumber:
-                    target
+                type: 'connectionAccepted',
+                targetMemberNumber: target,
+                targetName: name
             }
         );
+
+        refreshAllUI();
 
         setStatus(
             `Connected to ${name}.`
         );
 
-        refreshAllUI();
-    }
-
-    function disconnectUser(
-        memberNumber
-    ) {
-        const target =
-            normalizeMemberNumber(
-                memberNumber
-            );
-
-        const myNumber =
-            normalizeMemberNumber(
-                Player?.MemberNumber
-            );
-
-        if (
-            !target ||
-            target ===
-                myNumber
-        ) {
-            return;
-        }
-
-        connectedUsers.delete(
-            target
-        );
-
-        saveConnections();
-
-        sendBambiMessage(
-            target,
-            {
-                type:
-                    'connection_removed',
-
-                targetMemberNumber:
-                    target
-            }
-        );
-
-        setStatus(
-            `Disconnected from ${getCharacterName(target)}.`
-        );
-
-        refreshAllUI();
-    }
-
-    function sendTriggerToUser(
-        memberNumber,
-        triggerIndex
-    ) {
-        const target =
-            normalizeMemberNumber(
-                memberNumber
-            );
-
-        const myNumber =
-            normalizeMemberNumber(
-                Player?.MemberNumber
-            );
-
-        if (!target) {
-            setStatus(
-                'Choose a target first.'
-            );
-
-            return;
-        }
-
-        if (
-            target ===
-            myNumber
-        ) {
-            setStatus(
-                'You cannot send a remote trigger to yourself.'
-            );
-
-            return;
-        }
-
-        if (
-            !connectedUsers.has(
-                target
-            )
-        ) {
-            setStatus(
-                'Target is not connected.'
-            );
-
-            return;
-        }
-
-        if (
-            !isInCurrentRoom(
-                target
-            )
-        ) {
-            setStatus(
-                'Target is not currently in this room.'
-            );
-
-            return;
-        }
-
-        if (
-            !TRIGGERS[
-                triggerIndex
-            ]
-        ) {
-            return;
-        }
-
-        if (
-            sendBambiMessage(
-                target,
-                {
-                    type:
-                        'trigger',
-
-                    targetMemberNumber:
-                        target,
-
-                    triggerIndex
-                }
-            )
-        ) {
-            setStatus(
-                `Sent "${TRIGGERS[triggerIndex].name}" to ${getCharacterName(target)}`
-            );
-        }
-    }
-
-    function packetIsForMe(
-        payload
-    ) {
-        if (
-            !payload ||
-            typeof payload !==
-                'object'
-        ) {
-            return false;
-        }
-
-        if (
-            payload.type ===
-            'presence'
-        ) {
-            return true;
-        }
-
-        const myNumber =
-            normalizeMemberNumber(
-                Player?.MemberNumber
-            );
-
-        const target =
-            normalizeMemberNumber(
-                payload.targetMemberNumber
-            );
-
-        return (
-            target !==
-                0 &&
-            target ===
-                myNumber
-        );
+        return true;
     }
 
     // =========================================================
-    // MESSAGE HANDLING
+    // BAMBI MESSAGES
     // =========================================================
 
-    function handleBambiMessage(
-        data
-    ) {
-        if (
-            !data ||
-            data.Type !==
-                'Hidden' ||
-            data.Content !==
-                PROTOCOL ||
-            !Array.isArray(
-                data.Dictionary
-            ) ||
-            !data.Dictionary[0]
-        ) {
-            return;
-        }
-
-        const payload =
-            data.Dictionary[0].message;
+    function handleBambiMessage(data) {
+        if (!data) return;
 
         if (
-            !payload ||
-            typeof payload !==
-                'object'
+            data.Type !== 'Hidden' ||
+            data.Content !== PROTOCOL
         ) {
             return;
         }
@@ -2165,160 +1490,177 @@
                 data.Sender
             );
 
-        if (!sender) {
-            return;
-        }
-
-        const myNumber =
-            normalizeMemberNumber(
-                Player?.MemberNumber
-            );
+        if (!sender) return;
 
         if (
             sender ===
-            myNumber
-        ) {
-            return;
-        }
-
-        // ---------------------------------------------------------
-        // Presence
-        // ---------------------------------------------------------
-
-        if (
-            payload.type ===
-            'presence'
-        ) {
-            let labelXOffset =
-                Number(
-                    payload.labelXOffset
-                );
-
-            let labelYOffset =
-                Number(
-                    payload.labelYOffset
-                );
-
-            if (
-                !Number.isFinite(
-                    labelXOffset
-                )
-            ) {
-                labelXOffset =
-                    300;
-            }
-
-            if (
-                !Number.isFinite(
-                    labelYOffset
-                )
-            ) {
-                labelYOffset =
-                    -30;
-            }
-
-            bambiPresence.set(
-                sender,
-                {
-                    memberNumber:
-                        sender,
-
-                    name:
-                        payload.name ||
-                        getCharacterName(
-                            sender
-                        ),
-
-                    labelXOffset,
-                    labelYOffset,
-                    lastSeen:
-                        now()
-                }
-            );
-
-            return;
-        }
-
-        if (
-            !packetIsForMe(
-                payload
+            normalizeMemberNumber(
+                Player?.MemberNumber
             )
         ) {
             return;
         }
 
-        // ---------------------------------------------------------
+        let payload =
+            data.Dictionary?.[0]?.message;
+
+        if (!payload) return;
+
+        if (
+            typeof payload === 'string'
+        ) {
+            try {
+                payload = JSON.parse(payload);
+            } catch {
+                return;
+            }
+        }
+
+        if (
+            !payload ||
+            typeof payload !== 'object'
+        ) {
+            return;
+        }
+
+        // -----------------------------------------------------
+        // Presence
+        // -----------------------------------------------------
+
+        if (payload.type === 'presence') {
+            bambiPresence.set(
+                sender,
+                {
+                    memberNumber: sender,
+                    name:
+                        payload.name ||
+                        getCharacterName(sender),
+                    version:
+                        payload.version ||
+                        'unknown',
+                    lastSeen: now()
+                }
+            );
+
+            refreshAllUI();
+            return;
+        }
+
+        // -----------------------------------------------------
         // Connection accepted
-        // ---------------------------------------------------------
+        // -----------------------------------------------------
 
         if (
             payload.type ===
-            'connection_accepted'
+            'connectionAccepted'
         ) {
-            const name =
-                getCharacterName(
-                    sender
+            const target =
+                normalizeMemberNumber(
+                    payload.targetMemberNumber
                 );
 
-            connectedUsers.set(
+            if (
+                target ===
+                normalizeMemberNumber(
+                    Player?.MemberNumber
+                )
+            ) {
+                connectedUsers.set(
+                    sender,
+                    {
+                        memberNumber: sender,
+                        name:
+                            payload.targetName ||
+                            getCharacterName(sender)
+                    }
+                );
+
+                saveConnections();
+                refreshAllUI();
+
+                setStatus(
+                    `Connected to ${getCharacterName(sender)}.`
+                );
+            }
+
+            return;
+        }
+
+        // -----------------------------------------------------
+        // Connection request
+        // -----------------------------------------------------
+
+        if (
+            payload.type ===
+            'connectionRequest'
+        ) {
+            const target =
+                normalizeMemberNumber(
+                    payload.targetMemberNumber
+                );
+
+            if (
+                target !==
+                normalizeMemberNumber(
+                    Player?.MemberNumber
+                )
+            ) {
+                return;
+            }
+
+            const name =
+                getCharacterName(sender);
+
+            pendingRequests.set(
                 sender,
                 {
-                    memberNumber:
-                        sender,
-
+                    memberNumber: sender,
                     name
                 }
             );
 
-            saveConnections();
+            savePendingRequests();
             refreshAllUI();
 
-            setStatus(
-                `Connected to ${name}.`
-            );
+            if (
+                settings.autoAcceptConnections
+            ) {
+                acceptConnection(sender);
+            } else {
+                setStatus(
+                    `Connection request from ${name}.`
+                );
+            }
 
             return;
         }
 
-        // ---------------------------------------------------------
-        // Connection removed
-        // ---------------------------------------------------------
+        // -----------------------------------------------------
+        // Disconnect
+        // -----------------------------------------------------
 
         if (
             payload.type ===
-            'connection_removed'
+            'disconnect'
         ) {
-            connectedUsers.delete(
-                sender
-            );
-
+            connectedUsers.delete(sender);
             saveConnections();
             refreshAllUI();
-
-            setStatus(
-                `${getCharacterName(sender)} disconnected.`
-            );
-
             return;
         }
 
-        // ---------------------------------------------------------
+        // -----------------------------------------------------
         // Trigger
-        // ---------------------------------------------------------
+        // -----------------------------------------------------
 
-        if (
-            payload.type ===
-            'trigger'
-        ) {
+        if (payload.type === 'trigger') {
             const index =
                 Number(
                     payload.triggerIndex
                 );
 
             if (
-                !Number.isInteger(
-                    index
-                ) ||
+                !Number.isInteger(index) ||
                 !TRIGGERS[index]
             ) {
                 return;
@@ -2334,11 +1676,7 @@
                 return;
             }
 
-            if (
-                !canTrigger(
-                    sender
-                )
-            ) {
+            if (!canTrigger(sender)) {
                 console.log(
                     'Bambi Obeys: trigger rejected by authority mode:',
                     sender
@@ -2347,20 +1685,13 @@
                 return;
             }
 
-            playTrigger(
-                index
-            );
-
+            playTrigger(index);
             return;
         }
     }
 
-    function handleBambiChatMessage(
-        data
-    ) {
-        if (!data) {
-            return;
-        }
+    function handleBambiChatMessage(data) {
+        if (!data) return;
 
         const sender =
             normalizeMemberNumber(
@@ -2382,35 +1713,22 @@
                 data.Content || ''
             ).trim();
 
-        if (!message) {
-            return;
-        }
+        if (!message) return;
 
-        // Connection requests are
-        // ordinary whispers.
-
+        // Connection requests are ordinary whispers.
         if (
-            data.Type ===
-                'Whisper' &&
+            data.Type === 'Whisper' &&
             message.toLowerCase() ===
                 CONNECT_COMMAND.toLowerCase()
         ) {
             const name =
-                getCharacterName(
-                    sender
-                );
+                getCharacterName(sender);
 
-            if (
-                !connectedUsers.has(
-                    sender
-                )
-            ) {
+            if (!connectedUsers.has(sender)) {
                 pendingRequests.set(
                     sender,
                     {
-                        memberNumber:
-                            sender,
-
+                        memberNumber: sender,
                         name
                     }
                 );
@@ -2422,9 +1740,7 @@
             if (
                 settings.autoAcceptConnections
             ) {
-                acceptConnection(
-                    sender
-                );
+                acceptConnection(sender);
             } else {
                 setStatus(
                     `Connection request from ${name}.`
@@ -2435,77 +1751,16 @@
         }
 
         if (
-            data.Type ===
-                'Whisper' &&
+            data.Type === 'Whisper' &&
             message.toLowerCase() ===
                 DISCONNECT_COMMAND.toLowerCase()
         ) {
-            connectedUsers.delete(
-                sender
-            );
+            connectedUsers.delete(sender);
 
             saveConnections();
             refreshAllUI();
 
             return;
-        }
-    }
-
-    function installBambiMessageHook() {
-        if (
-            bambiMessageHookInstalled
-        ) {
-            return true;
-        }
-
-        if (
-            !bambiMod ||
-            typeof bambiMod.hookFunction !==
-                'function'
-        ) {
-            return false;
-        }
-
-        try {
-            bambiMod.hookFunction(
-                'ChatRoomMessage',
-                1,
-                (args, next) => {
-                    const data =
-                        args[0];
-
-                    try {
-                        handleBambiMessage(
-                            data
-                        );
-
-                        handleBambiChatMessage(
-                            data
-                        );
-                    } catch (error) {
-                        console.error(
-                            'Bambi Obeys: message handling failed',
-                            error
-                        );
-                    }
-
-                    return next(
-                        args
-                    );
-                }
-            );
-
-            bambiMessageHookInstalled =
-                true;
-
-            return true;
-        } catch (error) {
-            console.error(
-                'Bambi Obeys: ChatRoomMessage hook failed',
-                error
-            );
-
-            return false;
         }
     }
 
@@ -2560,8 +1815,55 @@
         }
     }
 
+    function installBambiMessageHook() {
+        if (bambiMessageHookInstalled) {
+            return true;
+        }
+
+        if (
+            !bambiMod ||
+            typeof bambiMod.hookFunction !==
+                'function'
+        ) {
+            return false;
+        }
+
+        try {
+            bambiMod.hookFunction(
+                'ChatRoomMessage',
+                1,
+                (args, next) => {
+                    const data = args[0];
+
+                    try {
+                        handleBambiMessage(data);
+                        handleBambiChatMessage(data);
+                    } catch (error) {
+                        console.error(
+                            'Bambi Obeys: message handling failed',
+                            error
+                        );
+                    }
+
+                    return next(args);
+                }
+            );
+
+            bambiMessageHookInstalled = true;
+
+            return true;
+        } catch (error) {
+            console.error(
+                'Bambi Obeys: ChatRoomMessage hook failed',
+                error
+            );
+
+            return false;
+        }
+    }
+
     // =========================================================
-    // BAMBI LABELS
+    // LABELS
     // =========================================================
 
     function getMainCanvasContext() {
@@ -2583,241 +1885,17 @@
                     'undefined' &&
                 MainCanvas
             ) {
-                if (
-                    typeof MainCanvas.fillText ===
-                        'function'
-                ) {
-                    return MainCanvas;
-                }
-
-                if (
-                    typeof MainCanvas.getContext ===
-                        'function'
-                ) {
-                    const ctx =
-                        MainCanvas.getContext(
-                            '2d'
-                        );
-
-                    if (
-                        ctx &&
-                        typeof ctx.fillText ===
-                            'function'
-                    ) {
-                        return ctx;
-                    }
-                }
+                return MainCanvas.getContext(
+                    '2d'
+                );
             }
         } catch {}
 
         return null;
     }
 
-    function drawBambiLabel(
-        context,
-        memberNumber,
-        charX,
-        charY,
-        zoom
-    ) {
-        if (
-            !settings.showBambiLabels
-        ) {
-            return;
-        }
-
-        const normalized =
-            normalizeMemberNumber(
-                memberNumber
-            );
-
-        if (!normalized) {
-            return;
-        }
-
-        const myNumber =
-            normalizeMemberNumber(
-                Player?.MemberNumber
-            );
-
-        const isMe =
-            normalized ===
-            myNumber;
-
-        let labelXOffset;
-        let labelYOffset;
-
-        if (
-            isMe
-        ) {
-            labelXOffset =
-                Number(
-                    settings.labelXOffset
-                );
-
-            labelYOffset =
-                Number(
-                    settings.labelYOffset
-                );
-        } else {
-            const presence =
-                bambiPresence.get(
-                    normalized
-                );
-
-            if (!presence) {
-                return;
-            }
-
-            if (
-                now() -
-                    Number(
-                        presence.lastSeen
-                    ) >
-                15000
-            ) {
-                return;
-            }
-
-            if (
-                !isInCurrentRoom(
-                    normalized
-                )
-            ) {
-                return;
-            }
-
-            labelXOffset =
-                Number(
-                    presence.labelXOffset
-                );
-
-            labelYOffset =
-                Number(
-                    presence.labelYOffset
-                );
-        }
-
-        if (
-            !Number.isFinite(
-                labelXOffset
-            )
-        ) {
-            labelXOffset =
-                300;
-        }
-
-        if (
-            !Number.isFinite(
-                labelYOffset
-            )
-        ) {
-            labelYOffset =
-                -30;
-        }
-
-        const x =
-            Number(
-                charX
-            );
-
-        const y =
-            Number(
-                charY
-            );
-
-        const zoomValue =
-            Number(
-                zoom
-            );
-
-        if (
-            !Number.isFinite(x) ||
-            !Number.isFinite(y) ||
-            !Number.isFinite(
-                zoomValue
-            )
-        ) {
-            return;
-        }
-
-        const text =
-            String(
-                settings.labelText ||
-                    'Bambi'
-            );
-
-        const alpha =
-            Math.max(
-                0,
-                Math.min(
-                    1,
-                    Number(
-                        settings.labelOpacity
-                    )
-                )
-            );
-
-        try {
-            context.save();
-
-            context.globalAlpha =
-                alpha;
-
-            context.fillStyle =
-                '#ff8fc7';
-
-            context.font =
-                'bold 18px Arial';
-
-            context.textAlign =
-                'center';
-
-            context.textBaseline =
-                'middle';
-
-            const labelX =
-                x +
-                labelXOffset;
-
-            const labelY =
-                y +
-                950 *
-                    zoomValue +
-                labelYOffset;
-
-            if (
-                typeof context.shadowColor !==
-                    'undefined'
-            ) {
-                context.shadowColor =
-                    'rgba(255,105,180,0.9)';
-
-                context.shadowBlur =
-                    4;
-            }
-
-            context.fillText(
-                text,
-                labelX,
-                labelY
-            );
-        } catch (error) {
-            console.error(
-                'Bambi Obeys: label draw failed',
-                error
-            );
-        } finally {
-            try {
-                context.restore();
-            } catch {}
-        }
-    }
-
     function installBambiLabelHook() {
-        if (
-            bambiDrawHookInstalled
-        ) {
+        if (bambiDrawHookInstalled) {
             return true;
         }
 
@@ -2838,45 +1916,129 @@
                         next(args);
 
                     try {
-                        const [
-                            C,
-                            CharX,
-                            CharY,
-                            Zoom
-                        ] =
-                            args;
-
                         if (
                             !settings.showBambiLabels
                         ) {
                             return result;
                         }
 
-                        if (
-                            !C?.MemberNumber
-                        ) {
-                            return result;
-                        }
-
-                        const context =
-                            getMainCanvasContext();
-
-                        if (
-                            !context
-                        ) {
-                            return result;
-                        }
-
-                        drawBambiLabel(
-                            context,
-                            C.MemberNumber,
+                        const [
+                            C,
                             CharX,
                             CharY,
                             Zoom
+                        ] = args;
+
+                        if (!C) {
+                            return result;
+                        }
+
+                        const memberNumber =
+                            normalizeMemberNumber(
+                                C.MemberNumber
+                            );
+
+                        if (!memberNumber) {
+                            return result;
+                        }
+
+                        if (
+                            !bambiPresence.has(
+                                memberNumber
+                            )
+                        ) {
+                            return result;
+                        }
+
+                        if (
+                            memberNumber ===
+                            normalizeMemberNumber(
+                                Player?.MemberNumber
+                            )
+                        ) {
+                            return result;
+                        }
+
+                        const ctx =
+                            getMainCanvasContext();
+
+                        if (!ctx) {
+                            return result;
+                        }
+
+                        const text =
+                            String(
+                                settings.labelText ||
+                                'Bambi'
+                            );
+
+                        const x =
+                            Number(CharX) +
+                            Number(
+                                settings.labelXOffset
+                            ) *
+                                Number(Zoom || 1);
+
+                        const y =
+                            Number(CharY) +
+                            Number(
+                                settings.labelYOffset
+                            ) *
+                                Number(Zoom || 1);
+
+                        ctx.save();
+
+                        ctx.globalAlpha =
+                            Math.max(
+                                0,
+                                Math.min(
+                                    1,
+                                    Number(
+                                        settings.labelOpacity
+                                    )
+                                )
+                            );
+
+                        ctx.font =
+                            `${Math.max(
+                                10,
+                                18 *
+                                    Number(
+                                        Zoom || 1
+                                    )
+                            )}px Arial`;
+
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'middle';
+
+                        ctx.fillStyle =
+                            '#ff69b4';
+
+                        ctx.strokeStyle =
+                            '#3a1730';
+
+                        ctx.lineWidth =
+                            4 *
+                            Number(
+                                Zoom || 1
+                            );
+
+                        ctx.strokeText(
+                            text,
+                            x,
+                            y
                         );
+
+                        ctx.fillText(
+                            text,
+                            x,
+                            y
+                        );
+
+                        ctx.restore();
                     } catch (error) {
-                        console.error(
-                            'Bambi Obeys: label hook failed',
+                        console.debug(
+                            'Bambi Obeys: label draw failed',
                             error
                         );
                     }
@@ -2885,13 +2047,12 @@
                 }
             );
 
-            bambiDrawHookInstalled =
-                true;
+            bambiDrawHookInstalled = true;
 
             return true;
         } catch (error) {
             console.error(
-                'Bambi Obeys: ChatRoomDrawCharacterStatusIcons hook failed',
+                'Bambi Obeys: label hook failed',
                 error
             );
 
@@ -2900,936 +2061,452 @@
     }
 
     // =========================================================
+    // TRIGGER SENDING
+    // =========================================================
+
+    function sendTrigger(
+        targetMemberNumber,
+        index
+    ) {
+        const target =
+            normalizeMemberNumber(
+                targetMemberNumber
+            );
+
+        const triggerIndex =
+            Number(index);
+
+        if (
+            !target ||
+            !Number.isInteger(
+                triggerIndex
+            ) ||
+            !TRIGGERS[triggerIndex]
+        ) {
+            return false;
+        }
+
+        if (!isInCurrentRoom(target)) {
+            setStatus(
+                'That person is not in the current room.'
+            );
+
+            return false;
+        }
+
+        if (
+            settings.authorityMode ===
+                'owner' &&
+            target !== getOwnerNumber()
+        ) {
+            // Sending is controlled by the sender's
+            // chosen target and not the receiver's authority.
+        }
+
+        sendBambiMessage(
+            target,
+            {
+                type: 'trigger',
+                triggerIndex,
+                triggerName:
+                    TRIGGERS[triggerIndex].name,
+                targetMemberNumber: target
+            }
+        );
+
+        setStatus(
+            `Sent "${TRIGGERS[triggerIndex].name}" to ${getCharacterName(target)}.`
+        );
+
+        return true;
+    }
+
+    // =========================================================
+    // CONNECTION REQUESTS
+    // =========================================================
+
+    function requestConnection(
+        memberNumber
+    ) {
+        const target =
+            normalizeMemberNumber(
+                memberNumber
+            );
+
+        if (!target) return false;
+
+        if (!isInCurrentRoom(target)) {
+            setStatus(
+                'That person is not in the current room.'
+            );
+
+            return false;
+        }
+
+        sendWhisper(
+            target,
+            CONNECT_COMMAND
+        );
+
+        setStatus(
+            `Connection request sent to ${getCharacterName(target)}.`
+        );
+
+        return true;
+    }
+
+    // =========================================================
     // UI HELPERS
     // =========================================================
 
-    function makeButton(
-        label,
-        onClick,
-        primary = false
-    ) {
-        const button =
-            document.createElement(
-                'button'
-            );
-
-        button.textContent =
-            label;
-
-        Object.assign(
-            button.style,
-            {
-                width:
-                    '100%',
-
-                padding:
-                    '8px',
-
-                marginBottom:
-                    '8px',
-
-                cursor:
-                    'pointer',
-
-                background:
-                    primary
-                        ? '#ff4fa3'
-                        : '#6b3158',
-
-                color:
-                    '#fff',
-
-                border:
-                    primary
-                        ? '1px solid #ff8fc7'
-                        : '1px solid #9d477e',
-
-                borderRadius:
-                    '5px',
-
-                fontWeight:
-                    primary
-                        ? 'bold'
-                        : 'normal'
-            }
-        );
-
-        button.addEventListener(
-            'click',
-            event => {
-                event.preventDefault();
-                onClick();
-            }
-        );
-
-        return button;
-    }
-
-    function makeCheckbox(
-        labelText,
-        checked,
-        onChange
-    ) {
-        const row =
-            document.createElement(
-                'label'
-            );
-
-        Object.assign(
-            row.style,
-            {
-                display:
-                    'flex',
-
-                alignItems:
-                    'center',
-
-                gap:
-                    '7px',
-
-                marginBottom:
-                    '7px',
-
-                cursor:
-                    'pointer'
-            }
-        );
-
-        const input =
-            document.createElement(
-                'input'
-            );
-
-        input.type =
-            'checkbox';
-
-        input.checked =
-            Boolean(
-                checked
-            );
-
-        input.addEventListener(
-            'change',
-            () => {
-                onChange(
-                    input.checked
-                );
-            }
-        );
-
-        const text =
-            document.createElement(
-                'span'
-            );
-
-        text.textContent =
-            labelText;
-
-        row.appendChild(
-            input
-        );
-
-        row.appendChild(
-            text
-        );
-
-        return row;
-    }
-
-    function makeNumberSlider(
-        labelText,
-        min,
-        max,
-        step,
-        initial,
-        formatValue,
-        onChange
-    ) {
-        const wrapper =
-            document.createElement(
-                'div'
-            );
-
-        wrapper.style.marginBottom =
-            '12px';
-
-        const header =
-            document.createElement(
-                'div'
-            );
-
-        Object.assign(
-            header.style,
-            {
-                display:
-                    'flex',
-
-                justifyContent:
-                    'space-between',
-
-                alignItems:
-                    'center',
-
-                gap:
-                    '10px',
-
-                marginBottom:
-                    '4px'
-            }
-        );
-
-        const label =
-            document.createElement(
-                'span'
-            );
-
-        label.textContent =
-            labelText;
-
-        label.style.color =
-            '#ffb8d9';
-
-        label.style.fontSize =
-            '12px';
-
-        const value =
-            document.createElement(
-                'span'
-            );
-
-        value.style.color =
-            '#fff';
-
-        value.style.fontSize =
-            '12px';
-
-        const input =
-            document.createElement(
-                'input'
-            );
-
-        input.type =
-            'range';
-
-        input.min =
-            String(
-                min
-            );
-
-        input.max =
-            String(
-                max
-            );
-
-        input.step =
-            String(
-                step
-            );
-
-        input.value =
-            String(
-                initial
-            );
-
-        input.style.width =
-            '100%';
-
-        function updateValue() {
-            const numeric =
-                Number(
-                    input.value
-                );
-
-            value.textContent =
-                formatValue(
-                    numeric
-                );
-        }
-
-        input.addEventListener(
-            'input',
-            () => {
-                const numeric =
-                    Number(
-                        input.value
-                    );
-
-                updateValue();
-
-                onChange(
-                    numeric
-                );
-            }
-        );
-
-        header.appendChild(
-            label
-        );
-
-        header.appendChild(
-            value
-        );
-
-        wrapper.appendChild(
-            header
-        );
-
-        wrapper.appendChild(
-            input
-        );
-
-        updateValue();
-
-        return wrapper;
-    }
-
-    function styleSelect(
-        select
-    ) {
-        Object.assign(
-            select.style,
-            {
-                width:
-                    '100%',
-
-                padding:
-                    '7px',
-
-                marginBottom:
-                    '7px',
-
-                boxSizing:
-                    'border-box',
-
-                background:
-                    '#fff0f7',
-
-                color:
-                    '#48172f',
-
-                border:
-                    '1px solid #ff69b4',
-
-                borderRadius:
-                    '5px'
-            }
-        );
-    }
-
     function createContentArea() {
         const content =
-            document.createElement(
-                'div'
-            );
+            document.createElement('div');
 
         Object.assign(
             content.style,
             {
-                maxHeight:
-                    '65vh',
-
-                overflowY:
-                    'auto',
-
-                paddingRight:
-                    '3px'
+                maxHeight: '420px',
+                overflowY: 'auto',
+                paddingRight: '2px'
             }
         );
 
         return content;
     }
 
-    function switchTab(
-        tabName
-    ) {
-        activeTab =
-            tabName;
+    function createLabel(text) {
+        const label =
+            document.createElement('div');
 
-        for (
-            const [
-                name,
-                button
-            ]
-            of Object.entries(
-                tabs
+        label.textContent = text;
+
+        Object.assign(
+            label.style,
+            {
+                fontSize: '11px',
+                marginTop: '7px',
+                marginBottom: '3px',
+                color: '#ffb6d9'
+            }
+        );
+
+        return label;
+    }
+
+    function createSelect() {
+        const select =
+            document.createElement('select');
+
+        Object.assign(
+            select.style,
+            {
+                width: '100%',
+                boxSizing: 'border-box',
+                padding: '5px',
+                background: '#5b2447',
+                color: '#fff',
+                border: '1px solid #ff8fc7',
+                borderRadius: '5px',
+                fontSize: '11px'
+            }
+        );
+
+        return select;
+    }
+
+    function createButton(
+        text,
+        callback
+    ) {
+        const button =
+            document.createElement('button');
+
+        button.textContent = text;
+
+        Object.assign(
+            button.style,
+            {
+                width: '100%',
+                padding: '6px',
+                marginTop: '5px',
+                cursor: 'pointer',
+                background: '#ff4fa3',
+                color: '#fff',
+                border: '1px solid #ff8fc7',
+                borderRadius: '5px',
+                fontSize: '11px'
+            }
+        );
+
+        button.addEventListener(
+            'click',
+            callback
+        );
+
+        return button;
+    }
+
+    function createCheckbox(
+        labelText,
+        checked,
+        callback
+    ) {
+        const wrapper =
+            document.createElement('label');
+
+        Object.assign(
+            wrapper.style,
+            {
+                display: 'flex',
+                alignItems: 'center',
+                gap: '5px',
+                fontSize: '11px',
+                marginTop: '6px',
+                cursor: 'pointer'
+            }
+        );
+
+        const input =
+            document.createElement('input');
+
+        input.type = 'checkbox';
+        input.checked = Boolean(
+            checked
+        );
+
+        input.addEventListener(
+            'change',
+            () => callback(
+                input.checked
             )
-        ) {
-            button.style.background =
-                name ===
-                    activeTab
-                        ? '#ff4fa3'
-                        : '#5b2447';
+        );
+
+        const text =
+            document.createElement('span');
+
+        text.textContent = labelText;
+
+        wrapper.appendChild(input);
+        wrapper.appendChild(text);
+
+        return wrapper;
+    }
+
+    function createNumberInput(
+        value,
+        min,
+        max,
+        step,
+        callback
+    ) {
+        const input =
+            document.createElement('input');
+
+        input.type = 'number';
+        input.value = value;
+        input.min = min;
+        input.max = max;
+        input.step = step;
+
+        Object.assign(
+            input.style,
+            {
+                width: '100%',
+                boxSizing: 'border-box',
+                padding: '5px',
+                background: '#5b2447',
+                color: '#fff',
+                border: '1px solid #ff8fc7',
+                borderRadius: '5px',
+                fontSize: '11px'
+            }
+        );
+
+        input.addEventListener(
+            'change',
+            () => {
+                const parsed =
+                    Number(input.value);
+
+                if (
+                    Number.isFinite(parsed)
+                ) {
+                    callback(parsed);
+                }
+            }
+        );
+
+        return input;
+    }
+
+    function createRangeInput(
+        value,
+        min,
+        max,
+        step,
+        callback
+    ) {
+        const input =
+            document.createElement('input');
+
+        input.type = 'range';
+        input.value = value;
+        input.min = min;
+        input.max = max;
+        input.step = step;
+
+        Object.assign(
+            input.style,
+            {
+                width: '100%'
+            }
+        );
+
+        input.addEventListener(
+            'input',
+            () => {
+                callback(
+                    Number(input.value)
+                );
+            }
+        );
+
+        return input;
+    }
+
+    // =========================================================
+    // UI TABS
+    // =========================================================
+
+    function switchTab(name) {
+        activeTab = name;
+
+        for (const tabName of Object.keys(tabs)) {
+            tabs[tabName].style.background =
+                tabName === name
+                    ? '#ff4fa3'
+                    : '#5b2447';
         }
 
         for (
-            const [
-                name,
-                content
-            ]
-            of Object.entries(
+            const contentName of Object.keys(
                 tabContents
             )
         ) {
-            content.style.display =
-                name ===
-                    activeTab
-                        ? 'block'
-                        : 'none';
+            tabContents[
+                contentName
+            ].style.display =
+                contentName === name
+                    ? 'block'
+                    : 'none';
         }
+
+        refreshAllUI();
     }
 
     // =========================================================
     // AUTHORITY TAB
     // =========================================================
 
-    function buildAuthorityTab(
-        content
-    ) {
-        const heading =
-            document.createElement(
-                'div'
-            );
+    function buildAuthorityTab(container) {
+        container.innerHTML = '';
 
-        heading.textContent =
-            'Who can trigger Bambi';
-
-        heading.style.fontWeight =
-            'bold';
-
-        heading.style.marginBottom =
-            '7px';
-
-        content.appendChild(
-            heading
+        container.appendChild(
+            createLabel(
+                'Who can control Bambi'
+            )
         );
 
+        const authoritySelect =
+            createSelect();
+
         const modes = [
-            [
-                'owner',
-                'Owner only'
-            ],
-            [
-                'friends',
-                'Friends only'
-            ],
-            [
-                'connected',
-                'Anyone connected'
-            ],
-            [
-                'anyone',
-                'Anyone'
-            ]
+            ['owner', 'Owner only'],
+            ['friends', 'Friends only'],
+            ['connected', 'Connected users'],
+            ['anyone', 'Anyone'],
+            ['whitelist', 'Whitelist only']
         ];
 
-        for (
-            const [
-                value,
-                labelText
-            ]
-            of modes
-        ) {
-            const row =
-                document.createElement(
-                    'label'
-                );
+        for (const [value, text] of modes) {
+            const option =
+                document.createElement('option');
 
-            Object.assign(
-                row.style,
-                {
-                    display:
-                        'flex',
+            option.value = value;
+            option.textContent = text;
 
-                    gap:
-                        '7px',
-
-                    marginBottom:
-                        '6px'
-                }
-            );
-
-            const input =
-                document.createElement(
-                    'input'
-                );
-
-            input.type =
-                'radio';
-
-            input.name =
-                'bambi-authority';
-
-            input.value =
-                value;
-
-            input.checked =
-                settings.authorityMode ===
-                value;
-
-            input.addEventListener(
-                'change',
-                () => {
-                    if (
-                        !input.checked
-                    ) {
-                        return;
-                    }
-
-                    settings.authorityMode =
-                        value;
-
-                    saveSettings();
-                }
-            );
-
-            const label =
-                document.createElement(
-                    'span'
-                );
-
-            label.textContent =
-                labelText;
-
-            row.appendChild(
-                input
-            );
-
-            row.appendChild(
-                label
-            );
-
-            content.appendChild(
-                row
+            authoritySelect.appendChild(
+                option
             );
         }
 
-        const whitelistLabel =
-            document.createElement(
-                'div'
-            );
+        authoritySelect.value =
+            settings.authorityMode;
 
-        whitelistLabel.textContent =
-            'Whitelist Member IDs';
+        authoritySelect.addEventListener(
+            'change',
+            () => {
+                settings.authorityMode =
+                    authoritySelect.value;
 
-        Object.assign(
-            whitelistLabel.style,
-            {
-                color:
-                    '#ffb8d9',
-
-                fontSize:
-                    '12px',
-
-                marginTop:
-                    '12px',
-
-                marginBottom:
-                    '4px'
+                saveSettings();
+                refreshAllUI();
             }
         );
 
-        content.appendChild(
-            whitelistLabel
+        container.appendChild(
+            authoritySelect
         );
 
-        const whitelist =
-            document.createElement(
-                'textarea'
-            );
+        container.appendChild(
+            createLabel(
+                'Whitelist member numbers'
+            )
+        );
 
-        whitelist.value =
-            settings.whitelist;
+        const whitelistInput =
+            document.createElement('textarea');
 
-        whitelist.placeholder =
-            '12345, 67890, 13579';
+        whitelistInput.value =
+            settings.whitelist || '';
+
+        whitelistInput.placeholder =
+            '12345, 67890';
 
         Object.assign(
-            whitelist.style,
+            whitelistInput.style,
             {
-                width:
-                    '100%',
-
-                minHeight:
-                    '55px',
-
-                boxSizing:
-                    'border-box',
-
-                background:
-                    '#fff0f7',
-
-                color:
-                    '#48172f',
-
-                border:
-                    '1px solid #ff69b4',
-
-                borderRadius:
-                    '5px',
-
-                padding:
-                    '6px',
-
-                resize:
-                    'vertical',
-
-                marginBottom:
-                    '10px'
+                width: '100%',
+                minHeight: '45px',
+                boxSizing: 'border-box',
+                resize: 'vertical',
+                padding: '5px',
+                background: '#5b2447',
+                color: '#fff',
+                border: '1px solid #ff8fc7',
+                borderRadius: '5px',
+                fontSize: '11px'
             }
         );
 
-        whitelist.addEventListener(
+        whitelistInput.addEventListener(
             'change',
             () => {
                 settings.whitelist =
-                    whitelist.value;
+                    whitelistInput.value;
 
                 saveSettings();
+                refreshAllUI();
             }
         );
 
-        content.appendChild(
-            whitelist
+        container.appendChild(
+            whitelistInput
         );
 
-        content.appendChild(
-            document.createElement(
-                'hr'
-            )
-        );
-
-        content.appendChild(
-            makeCheckbox(
-                'Automatically accept connection requests',
-                settings.autoAcceptConnections,
-                checked => {
-                    settings.autoAcceptConnections =
-                        checked;
-
-                    saveSettings();
-                }
-            )
-        );
-
-        content.appendChild(
-            makeButton(
-                'Disconnect selected user',
-                () => {
-                    if (
-                        selectedTarget
-                    ) {
-                        disconnectUser(
-                            selectedTarget
-                        );
-                    }
-                },
-                false
-            )
-        );
-
-        const note =
-            document.createElement(
-                'div'
-            );
-
-        note.textContent =
-            'Whitelist entries override the selected authority mode.';
-
-        Object.assign(
-            note.style,
-            {
-                fontSize:
-                    '11px',
-
-                color:
-                    '#d994ba',
-
-                lineHeight:
-                    '1.4',
-
-                marginTop:
-                    '4px'
-            }
-        );
-
-        content.appendChild(
-            note
-        );
-    }
-
-    // =========================================================
-    // TRIGGERS TAB
-    // =========================================================
-
-    function buildTriggersTab(
-        content
-    ) {
-        const connectLabel =
-            document.createElement(
-                'div'
-            );
-
-        connectLabel.textContent =
-            'Connect to';
-
-        Object.assign(
-            connectLabel.style,
-            {
-                color:
-                    '#ffb8d9',
-
-                fontSize:
-                    '12px',
-
-                marginBottom:
-                    '4px'
-            }
-        );
-
-        content.appendChild(
-            connectLabel
-        );
-
-        connectSelect =
-            document.createElement(
-                'select'
-            );
-
-        styleSelect(
-            connectSelect
-        );
-
-        content.appendChild(
-            connectSelect
-        );
-
-        content.appendChild(
-            makeButton(
-                '💗 Send :Bambi Connect',
-                () => {
-                    if (
-                        connectSelect?.value
-                    ) {
-                        requestConnection(
-                            connectSelect.value
-                        );
-                    }
-                },
-                true
-            )
-        );
-
-        const pendingHeading =
-            document.createElement(
-                'div'
-            );
-
-        pendingHeading.textContent =
-            'Pending requests';
-
-        pendingHeading.style.fontWeight =
-            'bold';
-
-        pendingHeading.style.margin =
-            '8px 0 5px';
-
-        content.appendChild(
-            pendingHeading
-        );
-
-        pendingArea =
-            document.createElement(
-                'div'
-            );
-
-        content.appendChild(
-            pendingArea
-        );
-
-        const targetLabel =
-            document.createElement(
-                'div'
-            );
-
-        targetLabel.textContent =
-            'Send to';
-
-        Object.assign(
-            targetLabel.style,
-            {
-                color:
-                    '#ffb8d9',
-
-                fontSize:
-                    '12px',
-
-                marginBottom:
-                    '4px',
-
-                marginTop:
-                    '8px'
-            }
-        );
-
-        content.appendChild(
-            targetLabel
-        );
-
-        targetSelect =
-            document.createElement(
-                'select'
-            );
-
-        styleSelect(
-            targetSelect
-        );
-
-        targetSelect.addEventListener(
-            'change',
-            () => {
-                selectedTarget =
-                    targetSelect.value;
-            }
-        );
-
-        content.appendChild(
-            targetSelect
-        );
-
-        const triggerLabel =
-            document.createElement(
-                'div'
-            );
-
-        triggerLabel.textContent =
-            'Trigger';
-
-        Object.assign(
-            triggerLabel.style,
-            {
-                color:
-                    '#ffb8d9',
-
-                fontSize:
-                    '12px',
-
-                marginBottom:
-                    '4px'
-            }
-        );
-
-        content.appendChild(
-            triggerLabel
-        );
-
-        triggerSelect =
-            document.createElement(
-                'select'
-            );
-
-        styleSelect(
-            triggerSelect
-        );
-
-        TRIGGERS.forEach(
-            (
-                trigger,
-                index
-            ) => {
-                const option =
-                    document.createElement(
-                        'option'
-                    );
-
-                option.value =
-                    String(
-                        index
-                    );
-
-                option.textContent =
-                    trigger.name;
-
-                triggerSelect.appendChild(
-                    option
-                );
-            }
-        );
-
-        triggerSelect.addEventListener(
-            'change',
-            () => {
-                selectedTrigger =
-                    Number(
-                        triggerSelect.value
-                    );
-
-                refreshTriggerDescription();
-            }
-        );
-
-        content.appendChild(
-            triggerSelect
-        );
-
-        triggerDescription =
-            document.createElement(
-                'div'
-            );
-
-        Object.assign(
-            triggerDescription.style,
-            {
-                fontSize:
-                    '11px',
-
-                color:
-                    '#d994ba',
-
-                lineHeight:
-                    '1.4',
-
-                minHeight:
-                    '42px',
-
-                marginBottom:
-                    '8px'
-            }
-        );
-
-        content.appendChild(
-            triggerDescription
-        );
-
-        content.appendChild(
-            makeButton(
-                '▶ Send Trigger',
-                () => {
-                    if (
-                        selectedTarget
-                    ) {
-                        sendTriggerToUser(
-                            selectedTarget,
-                            selectedTrigger
-                        );
-                    }
-                },
-                true
-            )
-        );
-
-        content.appendChild(
-            makeButton(
-                '▶ Test Trigger Locally',
-                () =>
-                    playTrigger(
-                        selectedTrigger
-                    ),
-                false
-            )
-        );
-
-        content.appendChild(
-            makeCheckbox(
+        container.appendChild(
+            createCheckbox(
                 'Accept incoming triggers',
                 settings.acceptIncoming,
                 checked => {
@@ -3841,141 +2518,357 @@
             )
         );
 
-        refreshTriggerDescription();
+        container.appendChild(
+            createCheckbox(
+                'Auto accept connection requests',
+                settings.autoAcceptConnections,
+                checked => {
+                    settings.autoAcceptConnections =
+                        checked;
+
+                    saveSettings();
+                }
+            )
+        );
+
+        container.appendChild(
+            createLabel(
+                'Connected users'
+            )
+        );
+
+        const connectionList =
+            document.createElement('div');
+
+        connectionList.dataset.bambi =
+            'connection-list';
+
+        container.appendChild(
+            connectionList
+        );
+
+        const disconnectButton =
+            createButton(
+                'Disconnect selected',
+                () => {
+                    const target =
+                        normalizeMemberNumber(
+                            targetSelect?.value
+                        );
+
+                    if (target) {
+                        disconnectUser(target);
+                    }
+                }
+            );
+
+        container.appendChild(
+            disconnectButton
+        );
     }
 
-    function refreshTriggerDescription() {
-        if (
-            !triggerDescription
+    // =========================================================
+    // TRIGGERS TAB
+    // =========================================================
+
+    function buildTriggersTab(container) {
+        container.innerHTML = '';
+
+        container.appendChild(
+            createLabel(
+                'Connect to'
+            )
+        );
+
+        connectSelect =
+            createSelect();
+
+        connectSelect.addEventListener(
+            'change',
+            () => {
+                const target =
+                    normalizeMemberNumber(
+                        connectSelect.value
+                    );
+
+                if (target) {
+                    requestConnection(target);
+                }
+
+                connectSelect.value = '';
+            }
+        );
+
+        const emptyOption =
+            document.createElement('option');
+
+        emptyOption.value = '';
+        emptyOption.textContent =
+            'Select someone...';
+
+        connectSelect.appendChild(
+            emptyOption
+        );
+
+        container.appendChild(
+            connectSelect
+        );
+
+        pendingArea =
+            document.createElement('div');
+
+        container.appendChild(
+            pendingArea
+        );
+
+        container.appendChild(
+            createLabel(
+                'Send trigger to'
+            )
+        );
+
+        targetSelect =
+            createSelect();
+
+        targetSelect.addEventListener(
+            'change',
+            () => {
+                selectedTarget =
+                    targetSelect.value;
+            }
+        );
+
+        container.appendChild(
+            targetSelect
+        );
+
+        container.appendChild(
+            createLabel(
+                'Trigger'
+            )
+        );
+
+        triggerSelect =
+            createSelect();
+
+        for (
+            let index = 0;
+            index < TRIGGERS.length;
+            index += 1
         ) {
+            const trigger =
+                TRIGGERS[index];
+
+            const option =
+                document.createElement('option');
+
+            option.value =
+                String(index);
+
+            option.textContent =
+                trigger.name;
+
+            triggerSelect.appendChild(
+                option
+            );
+        }
+
+        triggerSelect.value =
+            String(selectedTrigger);
+
+        triggerSelect.addEventListener(
+            'change',
+            () => {
+                selectedTrigger =
+                    Number(
+                        triggerSelect.value
+                    );
+
+                updateTriggerDescription();
+            }
+        );
+
+        container.appendChild(
+            triggerSelect
+        );
+
+        triggerDescription =
+            document.createElement('div');
+
+        Object.assign(
+            triggerDescription.style,
+            {
+                fontSize: '10px',
+                color: '#e8bfd5',
+                marginTop: '6px',
+                lineHeight: '1.35'
+            }
+        );
+
+        container.appendChild(
+            triggerDescription
+        );
+
+        container.appendChild(
+            createButton(
+                'Send trigger',
+                () => {
+                    const target =
+                        normalizeMemberNumber(
+                            targetSelect?.value
+                        );
+
+                    if (!target) {
+                        setStatus(
+                            'Select someone first.'
+                        );
+
+                        return;
+                    }
+
+                    sendTrigger(
+                        target,
+                        selectedTrigger
+                    );
+                }
+            )
+        );
+
+        container.appendChild(
+            createButton(
+                'Local test',
+                () => {
+                    playTrigger(
+                        selectedTrigger
+                    );
+                }
+            )
+        );
+
+        container.appendChild(
+            createCheckbox(
+                'Accept incoming triggers',
+                settings.acceptIncoming,
+                checked => {
+                    settings.acceptIncoming =
+                        checked;
+
+                    saveSettings();
+                }
+            )
+        );
+    }
+
+    function updateTriggerDescription() {
+        if (!triggerDescription) {
             return;
         }
 
+        const trigger =
+            TRIGGERS[selectedTrigger];
+
         triggerDescription.textContent =
-            TRIGGERS[
-                selectedTrigger
-            ]?.description ||
-            '';
+            trigger
+                ? trigger.description
+                : '';
     }
 
     // =========================================================
     // SAFETY TAB
     // =========================================================
 
-    function buildSafetyTab(
-        content
-    ) {
-        content.appendChild(
-            makeCheckbox(
-                'Auto wake enabled',
+    function buildSafetyTab(container) {
+        container.innerHTML = '';
+
+        container.appendChild(
+            createCheckbox(
+                'Enable auto wake',
                 settings.autoWakeEnabled,
                 checked => {
                     settings.autoWakeEnabled =
                         checked;
 
                     saveSettings();
-
                     scheduleRemainingWake();
                 }
             )
         );
 
-        content.appendChild(
-            makeNumberSlider(
-                'Auto wake after sleep',
+        container.appendChild(
+            createLabel(
+                'Auto wake after minutes'
+            )
+        );
+
+        const wakeInput =
+            createNumberInput(
+                settings.autoWakeMinutes,
                 0,
                 60,
                 1,
-                settings.autoWakeMinutes,
-                value =>
-                    value === 0
-                        ? 'Disabled'
-                        : `${value} min`,
                 value => {
                     settings.autoWakeMinutes =
                         value;
 
                     saveSettings();
-
                     scheduleRemainingWake();
                 }
+            );
+
+        container.appendChild(
+            wakeInput
+        );
+
+        container.appendChild(
+            createLabel(
+                'Enabled incoming triggers'
             )
         );
 
-        const explanation =
-            document.createElement(
-                'div'
-            );
+        for (
+            let index = 0;
+            index < TRIGGERS.length;
+            index += 1
+        ) {
+            const trigger =
+                TRIGGERS[index];
 
-        explanation.textContent =
-            '0 minutes disables auto wake. The timer survives refreshes.';
+            const enabled =
+                settings.enabledTriggers?.[
+                    trigger.name
+                ] !== false;
 
-        Object.assign(
-            explanation.style,
-            {
-                fontSize:
-                    '11px',
+            container.appendChild(
+                createCheckbox(
+                    trigger.name,
+                    enabled,
+                    checked => {
+                        if (
+                            !settings.enabledTriggers
+                        ) {
+                            settings.enabledTriggers =
+                                {};
+                        }
 
-                color:
-                    '#d994ba',
-
-                lineHeight:
-                    '1.4',
-
-                marginBottom:
-                    '12px'
-            }
-        );
-
-        content.appendChild(
-            explanation
-        );
-
-        const heading =
-            document.createElement(
-                'div'
-            );
-
-        heading.textContent =
-            'Trigger safety';
-
-        heading.style.fontWeight =
-            'bold';
-
-        heading.style.marginBottom =
-            '7px';
-
-        content.appendChild(
-            heading
-        );
-
-        TRIGGERS.forEach(
-            trigger => {
-                content.appendChild(
-                    makeCheckbox(
-                        trigger.name,
                         settings.enabledTriggers[
                             trigger.name
-                        ] !== false,
+                        ] = checked;
 
-                        checked => {
-                            settings.enabledTriggers[
-                                trigger.name
-                            ] =
-                                checked;
+                        saveSettings();
+                    }
+                )
+            );
+        }
 
-                            saveSettings();
-                        }
-                    )
-                );
-            }
-        );
-
-        content.appendChild(
-            makeButton(
-                'Stop all currently playing audio',
-                stopAllLayers,
-                false
+        container.appendChild(
+            createButton(
+                'Stop all active audio',
+                () => {
+                    stopAllAudio();
+                    setStatus(
+                        'All Bambi audio stopped.'
+                    );
+                }
             )
         );
     }
@@ -3984,18 +2877,21 @@
     // LIMITS TAB
     // =========================================================
 
-    function buildLimitsTab(
-        content
-    ) {
-        content.appendChild(
-            makeNumberSlider(
-                'Maximum simultaneous layers',
-                1,
-                10,
-                1,
+    function buildLimitsTab(container) {
+        container.innerHTML = '';
+
+        container.appendChild(
+            createLabel(
+                'Maximum simultaneous audio layers'
+            )
+        );
+
+        container.appendChild(
+            createNumberInput(
                 settings.maxSimultaneous,
-                value =>
-                    `${value}`,
+                1,
+                20,
+                1,
                 value => {
                     settings.maxSimultaneous =
                         value;
@@ -4005,39 +2901,42 @@
             )
         );
 
-        content.appendChild(
-            makeNumberSlider(
-                'Secondary trigger volume',
-                10,
-                100,
-                5,
-                Math.round(
-                    Number(
-                        settings.secondaryVolume
-                    ) *
-                    100
-                ),
-                value =>
-                    `${value}%`,
-                value => {
-                    settings.secondaryVolume =
-                        value /
-                        100;
-
-                    saveSettings();
-                }
+        container.appendChild(
+            createLabel(
+                'Secondary layer volume'
             )
         );
 
-        content.appendChild(
-            makeNumberSlider(
-                'Fade in',
+        const secondaryVolume =
+            createRangeInput(
+                settings.secondaryVolume,
                 0,
-                1000,
-                10,
+                1,
+                0.01,
+                value => {
+                    settings.secondaryVolume =
+                        value;
+
+                    saveSettings();
+                }
+            );
+
+        container.appendChild(
+            secondaryVolume
+        );
+
+        container.appendChild(
+            createLabel(
+                'Fade in (ms)'
+            )
+        );
+
+        container.appendChild(
+            createNumberInput(
                 settings.fadeInMs,
-                value =>
-                    `${value} ms`,
+                0,
+                5000,
+                10,
                 value => {
                     settings.fadeInMs =
                         value;
@@ -4047,15 +2946,18 @@
             )
         );
 
-        content.appendChild(
-            makeNumberSlider(
-                'Fade out',
-                0,
-                2000,
-                10,
+        container.appendChild(
+            createLabel(
+                'Fade out (ms)'
+            )
+        );
+
+        container.appendChild(
+            createNumberInput(
                 settings.fadeOutMs,
-                value =>
-                    `${value} ms`,
+                0,
+                5000,
+                10,
                 value => {
                     settings.fadeOutMs =
                         value;
@@ -4065,9 +2967,9 @@
             )
         );
 
-        content.appendChild(
-            makeCheckbox(
-                'Alternate secondary triggers between ears',
+        container.appendChild(
+            createCheckbox(
+                'Alternate secondary ears',
                 settings.alternateEars,
                 checked => {
                     settings.alternateEars =
@@ -4078,17 +2980,18 @@
             )
         );
 
-        content.appendChild(
-            makeNumberSlider(
-                'Trigger cooldown',
-                0,
-                5000,
-                50,
+        container.appendChild(
+            createLabel(
+                'Trigger cooldown (ms)'
+            )
+        );
+
+        container.appendChild(
+            createNumberInput(
                 settings.cooldownMs,
-                value =>
-                    value === 0
-                        ? 'Disabled'
-                        : `${value} ms`,
+                0,
+                60000,
+                50,
                 value => {
                     settings.cooldownMs =
                         value;
@@ -4098,15 +3001,18 @@
             )
         );
 
-        content.appendChild(
-            makeNumberSlider(
-                'Maximum triggers per minute',
-                1,
-                120,
-                1,
+        container.appendChild(
+            createLabel(
+                'Maximum triggers per minute'
+            )
+        );
+
+        container.appendChild(
+            createNumberInput(
                 settings.maxTriggersPerMinute,
-                value =>
-                    `${value}`,
+                0,
+                300,
+                1,
                 value => {
                     settings.maxTriggersPerMinute =
                         value;
@@ -4116,26 +3022,14 @@
             )
         );
 
-        const labelHeading =
-            document.createElement(
-                'div'
-            );
-
-        labelHeading.textContent =
-            'Bambi label';
-
-        labelHeading.style.fontWeight =
-            'bold';
-
-        labelHeading.style.margin =
-            '12px 0 7px';
-
-        content.appendChild(
-            labelHeading
+        container.appendChild(
+            createLabel(
+                'Bambi labels'
+            )
         );
 
-        content.appendChild(
-            makeCheckbox(
+        container.appendChild(
+            createCheckbox(
                 'Show Bambi labels',
                 settings.showBambiLabels,
                 checked => {
@@ -4147,115 +3041,80 @@
             )
         );
 
-        const textLabel =
-            document.createElement(
-                'div'
-            );
-
-        textLabel.textContent =
-            'Label text';
-
-        textLabel.style.color =
-            '#ffb8d9';
-
-        textLabel.style.fontSize =
-            '12px';
-
-        textLabel.style.marginBottom =
-            '4px';
-
-        content.appendChild(
-            textLabel
+        container.appendChild(
+            createLabel(
+                'Label opacity'
+            )
         );
 
-        const textInput =
-            document.createElement(
-                'input'
-            );
-
-        textInput.type =
-            'text';
-
-        textInput.value =
-            settings.labelText;
-
-        Object.assign(
-            textInput.style,
-            {
-                width:
-                    '100%',
-
-                boxSizing:
-                    'border-box',
-
-                padding:
-                    '7px',
-
-                background:
-                    '#fff0f7',
-
-                color:
-                    '#48172f',
-
-                border:
-                    '1px solid #ff69b4',
-
-                borderRadius:
-                    '5px',
-
-                marginBottom:
-                    '8px'
-            }
-        );
-
-        textInput.addEventListener(
-            'change',
-            () => {
-                settings.labelText =
-                    textInput.value ||
-                    'Bambi';
-
-                saveSettings();
-            }
-        );
-
-        content.appendChild(
-            textInput
-        );
-
-        content.appendChild(
-            makeNumberSlider(
-                'Label opacity',
+        container.appendChild(
+            createRangeInput(
+                settings.labelOpacity,
                 0,
-                100,
                 1,
-                Math.round(
-                    Number(
-                        settings.labelOpacity
-                    ) *
-                    100
-                ),
-                value =>
-                    `${value}%`,
+                0.01,
                 value => {
                     settings.labelOpacity =
-                        value /
-                        100;
+                        value;
 
                     saveSettings();
                 }
             )
         );
 
-        content.appendChild(
-            makeNumberSlider(
-                'Horizontal label offset',
-                -600,
-                600,
-                5,
+        container.appendChild(
+            createLabel(
+                'Label text'
+            )
+        );
+
+        const labelTextInput =
+            document.createElement('input');
+
+        labelTextInput.type = 'text';
+        labelTextInput.value =
+            settings.labelText;
+
+        Object.assign(
+            labelTextInput.style,
+            {
+                width: '100%',
+                boxSizing: 'border-box',
+                padding: '5px',
+                background: '#5b2447',
+                color: '#fff',
+                border: '1px solid #ff8fc7',
+                borderRadius: '5px',
+                fontSize: '11px'
+            }
+        );
+
+        labelTextInput.addEventListener(
+            'change',
+            () => {
+                settings.labelText =
+                    labelTextInput.value;
+
+                saveSettings();
+            }
+        );
+
+        container.appendChild(
+            labelTextInput
+        );
+
+        container.appendChild(
+            createLabel(
+                'Horizontal offset'
+            )
+        );
+
+        container.appendChild(
+            createNumberInput(
                 settings.labelXOffset,
-                value =>
-                    `${value}px`,
+                -1000,
+                1000,
+                1,
                 value => {
                     settings.labelXOffset =
                         value;
@@ -4265,15 +3124,18 @@
             )
         );
 
-        content.appendChild(
-            makeNumberSlider(
-                'Vertical label offset',
-                -600,
-                600,
-                5,
+        container.appendChild(
+            createLabel(
+                'Vertical offset'
+            )
+        );
+
+        container.appendChild(
+            createNumberInput(
                 settings.labelYOffset,
-                value =>
-                    `${value}px`,
+                -1000,
+                1000,
+                1,
                 value => {
                     settings.labelYOffset =
                         value;
@@ -4288,76 +3150,52 @@
     // UI REFRESH
     // =========================================================
 
-    function refreshConnectDropdown() {
-        if (
-            !connectSelect
-        ) {
-            return;
-        }
+    function refreshConnectSelect() {
+        if (!connectSelect) return;
 
-        const oldValue =
+        const current =
             connectSelect.value;
 
-        connectSelect.innerHTML =
-            '';
+        connectSelect.innerHTML = '';
 
-        const roomMembers =
+        const emptyOption =
+            document.createElement('option');
+
+        emptyOption.value = '';
+        emptyOption.textContent =
+            'Select someone...';
+
+        connectSelect.appendChild(
+            emptyOption
+        );
+
+        const currentMembers =
             getRoomCharacters()
-                .map(
-                    character => ({
-                        memberNumber:
-                            normalizeMemberNumber(
-                                character?.MemberNumber
-                            ),
-
-                        name:
-                            character?.Nickname ||
-                            character?.Name ||
-                            'Unknown'
-                    })
-                )
-                .filter(
-                    entry =>
-                        entry.memberNumber
-                )
-                .filter(
-                    entry =>
-                        entry.memberNumber !==
+                .map(character => ({
+                    memberNumber:
                         normalizeMemberNumber(
-                            Player?.MemberNumber
+                            character?.MemberNumber
+                        ),
+                    name:
+                        character?.Nickname ||
+                        character?.Name ||
+                        'Unknown'
+                }))
+                .filter(
+                    entry =>
+                        entry.memberNumber &&
+                        entry.memberNumber !==
+                            normalizeMemberNumber(
+                                Player?.MemberNumber
+                            ) &&
+                        !connectedUsers.has(
+                            entry.memberNumber
                         )
                 );
 
-        if (
-            roomMembers.length ===
-            0
-        ) {
+        for (const entry of currentMembers) {
             const option =
-                document.createElement(
-                    'option'
-                );
-
-            option.value =
-                '';
-
-            option.textContent =
-                'No other users in room';
-
-            connectSelect.appendChild(
-                option
-            );
-
-            return;
-        }
-
-        for (
-            const entry
-            of roomMembers
-        ) {
-            const option =
-                document.createElement(
-                    'option'
-                );
+                document.createElement('option');
 
             option.value =
                 String(
@@ -4365,7 +3203,7 @@
                 );
 
             option.textContent =
-                entry.name;
+                `${entry.name} (${entry.memberNumber})`;
 
             connectSelect.appendChild(
                 option
@@ -4373,97 +3211,58 @@
         }
 
         if (
-            [
-                ...connectSelect.options
-            ].some(
+            [...connectSelect.options].some(
                 option =>
-                    option.value ===
-                    oldValue
+                    option.value === current
             )
         ) {
             connectSelect.value =
-                oldValue;
+                current;
         }
     }
 
-    function refreshTargetDropdown() {
-        if (
-            !targetSelect
-        ) {
-            return;
-        }
+    function refreshTargetSelect() {
+        if (!targetSelect) return;
 
-        const oldValue =
+        const current =
+            targetSelect.value ||
             selectedTarget;
 
-        targetSelect.innerHTML =
-            '';
+        targetSelect.innerHTML = '';
 
-        const roomConnected =
-            [
-                ...connectedUsers.values()
-            ]
-            .filter(
-                user =>
-                    isInCurrentRoom(
-                        user.memberNumber
-                    )
-            )
-            .sort(
-                (a, b) =>
-                    String(
-                        a.name
-                    ).localeCompare(
-                        String(
-                            b.name
-                        )
-                    )
-            );
+        const emptyOption =
+            document.createElement('option');
 
-        if (
-            roomConnected.length ===
-            0
-        ) {
-            selectedTarget =
-                '';
+        emptyOption.value = '';
+        emptyOption.textContent =
+            'Select connected user...';
 
-            const option =
-                document.createElement(
-                    'option'
-                );
-
-            option.value =
-                '';
-
-            option.textContent =
-                'No connected users in room';
-
-            targetSelect.appendChild(
-                option
-            );
-
-            return;
-        }
+        targetSelect.appendChild(
+            emptyOption
+        );
 
         for (
-            const user
-            of roomConnected
+            const [
+                memberNumber,
+                user
+            ] of connectedUsers
         ) {
+            if (
+                !isInCurrentRoom(
+                    memberNumber
+                )
+            ) {
+                continue;
+            }
+
             const option =
-                document.createElement(
-                    'option'
-                );
+                document.createElement('option');
 
             option.value =
-                String(
-                    user.memberNumber
-                );
+                String(memberNumber);
 
             option.textContent =
-                user.name ||
-                getCharacterName(
-                    user.memberNumber
-                );
+                `${user.name || getCharacterName(memberNumber)} (${memberNumber})`;
 
             targetSelect.appendChild(
                 option
@@ -4471,111 +3270,63 @@
         }
 
         if (
-            [
-                ...targetSelect.options
-            ].some(
+            [...targetSelect.options].some(
                 option =>
-                    option.value ===
-                    oldValue
+                    option.value === current
             )
         ) {
             targetSelect.value =
-                oldValue;
+                current;
         } else {
-            selectedTarget =
-                targetSelect.value ||
-                '';
+            selectedTarget = '';
         }
     }
 
     function refreshPendingArea() {
-        if (
-            !pendingArea
-        ) {
+        if (!pendingArea) return;
+
+        pendingArea.innerHTML = '';
+
+        if (!pendingRequests.size) {
             return;
         }
 
-        pendingArea.innerHTML =
-            '';
-
-        if (
-            pendingRequests.size ===
-            0
-        ) {
-            const empty =
-                document.createElement(
-                    'div'
-                );
-
-            empty.textContent =
-                'No pending requests.';
-
-            Object.assign(
-                empty.style,
-                {
-                    color:
-                        '#d994ba',
-
-                    fontSize:
-                        '11px',
-
-                    marginBottom:
-                        '8px'
-                }
-            );
-
-            pendingArea.appendChild(
-                empty
-            );
-
-            return;
-        }
+        pendingArea.appendChild(
+            createLabel(
+                'Pending requests'
+            )
+        );
 
         for (
-            const request
-            of pendingRequests.values()
+            const [
+                memberNumber,
+                request
+            ] of pendingRequests
         ) {
             const row =
-                document.createElement(
-                    'div'
-                );
+                document.createElement('div');
 
             Object.assign(
                 row.style,
                 {
-                    display:
-                        'flex',
-
-                    alignItems:
-                        'center',
-
-                    gap:
-                        '6px',
-
-                    marginBottom:
-                        '6px'
+                    display: 'flex',
+                    gap: '4px',
+                    alignItems: 'center',
+                    marginTop: '4px'
                 }
             );
 
             const text =
-                document.createElement(
-                    'span'
-                );
+                document.createElement('span');
 
             text.textContent =
-                request.name ||
-                'Unknown';
+                `${request.name} (${memberNumber})`;
 
-            text.style.flex =
-                '1';
-
-            text.style.fontSize =
-                '12px';
+            text.style.flex = '1';
+            text.style.fontSize = '10px';
 
             const accept =
-                document.createElement(
-                    'button'
-                );
+                document.createElement('button');
 
             accept.textContent =
                 'Accept';
@@ -4583,23 +3334,13 @@
             Object.assign(
                 accept.style,
                 {
-                    padding:
-                        '4px 7px',
-
-                    cursor:
-                        'pointer',
-
-                    background:
-                        '#ff4fa3',
-
-                    color:
-                        '#fff',
-
-                    border:
-                        '1px solid #ff8fc7',
-
-                    borderRadius:
-                        '4px'
+                    background: '#ff4fa3',
+                    color: '#fff',
+                    border: '1px solid #ff8fc7',
+                    borderRadius: '4px',
+                    padding: '4px',
+                    cursor: 'pointer',
+                    fontSize: '10px'
                 }
             );
 
@@ -4607,103 +3348,94 @@
                 'click',
                 () => {
                     acceptConnection(
-                        request.memberNumber
+                        memberNumber
                     );
                 }
             );
 
-            const reject =
-                document.createElement(
-                    'button'
-                );
+            row.appendChild(text);
+            row.appendChild(accept);
 
-            reject.textContent =
-                '×';
-
-            Object.assign(
-                reject.style,
-                {
-                    padding:
-                        '4px 7px',
-
-                    cursor:
-                        'pointer',
-
-                    background:
-                        '#6b3158',
-
-                    color:
-                        '#fff',
-
-                    border:
-                        '1px solid #9d477e',
-
-                    borderRadius:
-                        '4px'
-                }
-            );
-
-            reject.addEventListener(
-                'click',
-                () => {
-                    pendingRequests.delete(
-                        request.memberNumber
-                    );
-
-                    savePendingRequests();
-                    refreshPendingArea();
-                }
-            );
-
-            row.appendChild(
-                text
-            );
-
-            row.appendChild(
-                accept
-            );
-
-            row.appendChild(
-                reject
-            );
-
-            pendingArea.appendChild(
-                row
-            );
+            pendingArea.appendChild(row);
         }
     }
 
-    function refreshStatus() {
-        if (
-            !statusText
-        ) {
+    function refreshConnectionList() {
+        if (!panel) return;
+
+        const list =
+            panel.querySelector(
+                '[data-bambi="connection-list"]'
+            );
+
+        if (!list) return;
+
+        list.innerHTML = '';
+
+        if (!connectedUsers.size) {
+            const empty =
+                document.createElement('div');
+
+            empty.textContent =
+                'No connected users.';
+
+            empty.style.fontSize =
+                '10px';
+
+            empty.style.color =
+                '#d8b3c8';
+
+            list.appendChild(empty);
+
             return;
         }
 
-        const count =
-            [
-                ...connectedUsers.keys()
-            ]
-            .filter(
-                memberNumber =>
-                    isInCurrentRoom(
-                        memberNumber
-                    )
-            )
-            .length;
+        for (
+            const [
+                memberNumber,
+                user
+            ] of connectedUsers
+        ) {
+            const row =
+                document.createElement('div');
 
-        statusText.textContent =
-            count === 0
-                ? 'No connected users in room.'
-                : `${count} connected in room`;
+            row.textContent =
+                `${user.name || getCharacterName(memberNumber)} (${memberNumber})`;
+
+            Object.assign(
+                row.style,
+                {
+                    fontSize: '10px',
+                    padding: '3px 0',
+                    color:
+                        isInCurrentRoom(
+                            memberNumber
+                        )
+                            ? '#fff'
+                            : '#a98a9b'
+                }
+            );
+
+            list.appendChild(row);
+        }
     }
 
     function refreshAllUI() {
-        refreshConnectDropdown();
-        refreshTargetDropdown();
+        refreshConnectSelect();
+        refreshTargetSelect();
         refreshPendingArea();
-        refreshStatus();
-        refreshTriggerDescription();
+        refreshConnectionList();
+        updateTriggerDescription();
+
+        if (versionText) {
+            versionText.textContent =
+                `v${BAMBI_VERSION}`;
+        }
+
+        if (statusText && !statusText.textContent) {
+            statusText.textContent =
+                `Bambi Obeys v${BAMBI_VERSION}`;
+        }
     }
 
     // =========================================================
@@ -4714,31 +3446,17 @@
         element,
         handle
     ) {
-        let dragging =
-            false;
-
-        let moved =
-            false;
-
-        let offsetX =
-            0;
-
-        let offsetY =
-            0;
-
-        let startX =
-            0;
-
-        let startY =
-            0;
+        let dragging = false;
+        let moved = false;
+        let offsetX = 0;
+        let offsetY = 0;
+        let startX = 0;
+        let startY = 0;
 
         handle.addEventListener(
             'mousedown',
             event => {
-                if (
-                    event.button !==
-                    0
-                ) {
+                if (event.button !== 0) {
                     return;
                 }
 
@@ -4759,11 +3477,8 @@
                 startY =
                     event.clientY;
 
-                moved =
-                    false;
-
-                dragging =
-                    true;
+                moved = false;
+                dragging = true;
 
                 handle.style.cursor =
                     'grabbing';
@@ -4778,11 +3493,7 @@
         document.addEventListener(
             'mousemove',
             event => {
-                if (
-                    !dragging
-                ) {
-                    return;
-                }
+                if (!dragging) return;
 
                 if (
                     Math.abs(
@@ -4794,8 +3505,7 @@
                         startY
                     ) > 5
                 ) {
-                    moved =
-                        true;
+                    moved = true;
                 }
 
                 let left =
@@ -4855,14 +3565,9 @@
         document.addEventListener(
             'mouseup',
             () => {
-                if (
-                    !dragging
-                ) {
-                    return;
-                }
+                if (!dragging) return;
 
-                dragging =
-                    false;
+                dragging = false;
 
                 handle.style.cursor =
                     'grab';
@@ -4881,41 +3586,25 @@
     // =========================================================
 
     function createUI() {
-        if (
-            container
-        ) {
-            return;
-        }
+        if (container) return;
 
         container =
-            document.createElement(
-                'div'
-            );
+            document.createElement('div');
 
         Object.assign(
             container.style,
             {
-                position:
-                    'fixed',
-
-                left:
-                    '20px',
-
-                top:
-                    '100px',
-
-                zIndex:
-                    '999999',
-
+                position: 'fixed',
+                left: '20px',
+                top: '100px',
+                zIndex: '999999',
                 fontFamily:
                     'Arial, sans-serif'
             }
         );
 
         floatingButton =
-            document.createElement(
-                'button'
-            );
+            document.createElement('button');
 
         floatingButton.textContent =
             'B';
@@ -4926,123 +3615,72 @@
         Object.assign(
             floatingButton.style,
             {
-                width:
-                    '44px',
-
-                height:
-                    '44px',
-
-                borderRadius:
-                    '50%',
-
+                width: '44px',
+                height: '44px',
+                borderRadius: '50%',
                 border:
                     '2px solid #ff8fc7',
-
                 background:
                     '#ff4fa3',
-
-                color:
-                    '#fff',
-
-                fontSize:
-                    '18px',
-
-                fontWeight:
-                    'bold',
-
-                cursor:
-                    'grab',
-
+                color: '#fff',
+                fontSize: '18px',
+                fontWeight: 'bold',
+                cursor: 'grab',
                 boxShadow:
                     '0 4px 12px rgba(255, 50, 150, 0.4)'
             }
         );
 
         panel =
-            document.createElement(
-                'div'
-            );
+            document.createElement('div');
 
         Object.assign(
             panel.style,
             {
-                display:
-                    'none',
-
-                width:
-                    '305px',
-
-                marginTop:
-                    '8px',
-
-                background:
-                    '#3a1730',
-
-                color:
-                    '#fff',
-
-                padding:
-                    '12px',
-
-                borderRadius:
-                    '10px',
-
+                display: 'none',
+                width: '305px',
+                marginTop: '8px',
+                background: '#3a1730',
+                color: '#fff',
+                padding: '12px',
+                borderRadius: '10px',
                 boxShadow:
                     '0 4px 18px rgba(0,0,0,0.45)',
-
                 border:
                     '1px solid #ff69b4',
-
-                boxSizing:
-                    'border-box'
+                boxSizing: 'border-box'
             }
         );
 
         const header =
-            document.createElement(
-                'div'
-            );
+            document.createElement('div');
 
         Object.assign(
             header.style,
             {
-                display:
-                    'flex',
-
-                alignItems:
-                    'center',
-
+                display: 'flex',
+                alignItems: 'center',
                 justifyContent:
                     'space-between',
-
-                marginBottom:
-                    '10px'
+                marginBottom: '10px'
             }
         );
 
         const titleWrap =
-            document.createElement(
-                'div'
-            );
+            document.createElement('div');
 
         Object.assign(
             titleWrap.style,
             {
-                display:
-                    'flex',
-
+                display: 'flex',
                 alignItems:
                     'baseline',
-
-                gap:
-                    '7px'
+                gap: '7px'
             }
         );
 
         const title =
-            document.createElement(
-                'span'
-            );
+            document.createElement('span');
 
         title.textContent =
             PRODUCT_NAME;
@@ -5050,22 +3688,16 @@
         Object.assign(
             title.style,
             {
-                fontWeight:
-                    'bold',
-
-                fontSize:
-                    '16px',
-
-                color:
-                    '#ff9bce'
+                fontWeight: 'bold',
+                fontSize: '16px',
+                color: '#ff9bce'
             }
         );
 
-        // Version shown directly in the Club UI.
+        // Version is visible in the Club UI
+        // whenever the B button is opened.
         versionText =
-            document.createElement(
-                'span'
-            );
+            document.createElement('span');
 
         versionText.textContent =
             `v${BAMBI_VERSION}`;
@@ -5073,56 +3705,37 @@
         Object.assign(
             versionText.style,
             {
-                fontSize:
-                    '11px',
-
-                color:
-                    '#d994ba'
+                fontSize: '11px',
+                color: '#d994ba'
             }
         );
 
-        titleWrap.appendChild(
-            title
-        );
-
+        titleWrap.appendChild(title);
         titleWrap.appendChild(
             versionText
         );
 
         const close =
-            document.createElement(
-                'button'
-            );
+            document.createElement('button');
 
-        close.textContent =
-            '×';
+        close.textContent = '×';
 
         Object.assign(
             close.style,
             {
                 background:
                     'transparent',
-
-                border:
-                    'none',
-
-                color:
-                    '#ff9bce',
-
-                fontSize:
-                    '22px',
-
-                cursor:
-                    'pointer'
+                border: 'none',
+                color: '#ff9bce',
+                fontSize: '22px',
+                cursor: 'pointer'
             }
         );
 
         close.addEventListener(
             'click',
             () => {
-                panelOpen =
-                    false;
-
+                panelOpen = false;
                 panel.style.display =
                     'none';
             }
@@ -5141,21 +3754,14 @@
         );
 
         statusText =
-            document.createElement(
-                'div'
-            );
+            document.createElement('div');
 
         Object.assign(
             statusText.style,
             {
-                fontSize:
-                    '11px',
-
-                color:
-                    '#ff9bce',
-
-                marginBottom:
-                    '8px'
+                fontSize: '11px',
+                color: '#ff9bce',
+                marginBottom: '8px'
             }
         );
 
@@ -5164,24 +3770,16 @@
         );
 
         const tabBar =
-            document.createElement(
-                'div'
-            );
+            document.createElement('div');
 
         Object.assign(
             tabBar.style,
             {
-                display:
-                    'grid',
-
+                display: 'grid',
                 gridTemplateColumns:
                     'repeat(4, 1fr)',
-
-                gap:
-                    '4px',
-
-                marginBottom:
-                    '8px'
+                gap: '4px',
+                marginBottom: '8px'
             }
         );
 
@@ -5189,8 +3787,7 @@
         tabContents = {};
 
         for (
-            const name
-            of [
+            const name of [
                 'Authority',
                 'Triggers',
                 'Safety',
@@ -5198,9 +3795,7 @@
             ]
         ) {
             const tabButton =
-                document.createElement(
-                    'button'
-                );
+                document.createElement('button');
 
             tabButton.textContent =
                 name;
@@ -5208,43 +3803,26 @@
             Object.assign(
                 tabButton.style,
                 {
-                    padding:
-                        '6px 3px',
-
-                    cursor:
-                        'pointer',
-
-                    color:
-                        '#fff',
-
+                    padding: '6px 3px',
+                    cursor: 'pointer',
+                    color: '#fff',
                     border:
                         '1px solid #ff8fc7',
-
-                    borderRadius:
-                        '5px',
-
+                    borderRadius: '5px',
                     background:
-                        name ===
-                            activeTab
-                                ? '#ff4fa3'
-                                : '#5b2447',
-
-                    fontSize:
-                        '11px'
+                        name === activeTab
+                            ? '#ff4fa3'
+                            : '#5b2447',
+                    fontSize: '11px'
                 }
             );
 
             tabButton.addEventListener(
                 'click',
-                () =>
-                    switchTab(
-                        name
-                    )
+                () => switchTab(name)
             );
 
-            tabs[
-                name
-            ] =
+            tabs[name] =
                 tabButton;
 
             tabBar.appendChild(
@@ -5257,8 +3835,7 @@
         );
 
         for (
-            const name
-            of [
+            const name of [
                 'Authority',
                 'Triggers',
                 'Safety',
@@ -5269,14 +3846,11 @@
                 createContentArea();
 
             content.style.display =
-                name ===
-                    activeTab
-                        ? 'block'
-                        : 'none';
+                name === activeTab
+                    ? 'block'
+                    : 'none';
 
-            tabContents[
-                name
-            ] =
+            tabContents[name] =
                 content;
 
             panel.appendChild(
@@ -5339,10 +3913,7 @@
             }
         );
 
-        switchTab(
-            activeTab
-        );
-
+        switchTab(activeTab);
         refreshAllUI();
     }
 
@@ -5360,14 +3931,12 @@
                                 character?.MemberNumber
                             )
                     )
-                    .filter(
-                        Boolean
-                    )
+                    .filter(Boolean)
             );
 
         for (
-            const memberNumber
-            of bambiPresence.keys()
+            const memberNumber of
+                bambiPresence.keys()
         ) {
             if (
                 !currentMembers.has(
@@ -5384,8 +3953,7 @@
             const [
                 memberNumber,
                 user
-            ]
-            of connectedUsers
+            ] of connectedUsers
         ) {
             if (
                 currentMembers.has(
@@ -5403,8 +3971,7 @@
             const [
                 memberNumber,
                 user
-            ]
-            of pendingRequests
+            ] of pendingRequests
         ) {
             if (
                 currentMembers.has(
@@ -5430,8 +3997,7 @@
     loadStorage();
     installAudioUnlock();
 
-    let initAttempts =
-        0;
+    let initAttempts = 0;
 
     const initInterval =
         setInterval(
@@ -5456,9 +4022,7 @@
                     return;
                 }
 
-                if (
-                    !registerBambiMod()
-                ) {
+                if (!registerBambiMod()) {
                     if (
                         initAttempts >
                         1200
@@ -5497,10 +4061,31 @@
                 );
 
                 createUI();
-
                 scheduleRemainingWake();
 
+                // Handles the "Update complete!" message
+                // after a refresh into a newly downloaded build.
                 checkVersionUpdate();
+
+                // Check for a newer hosted build while the
+                // current build is still running. This means
+                // the user gets the refresh instruction BEFORE
+                // loading the new version.
+                setTimeout(
+                    () => {
+                        checkForNewVersion();
+                    },
+                    1500
+                );
+
+                // Keep checking periodically while the Club
+                // page remains open.
+                setInterval(
+                    () => {
+                        checkForNewVersion();
+                    },
+                    5 * 60 * 1000
+                );
 
                 setTimeout(
                     refreshRoomData,
@@ -5515,21 +4100,18 @@
                 setInterval(
                     () => {
                         const cutoff =
-                            now() -
-                            15000;
+                            now() - 15000;
 
                         for (
                             const [
                                 memberNumber,
                                 presence
-                            ]
-                            of bambiPresence
+                            ] of bambiPresence
                         ) {
                             if (
                                 Number(
                                     presence.lastSeen
-                                ) <
-                                cutoff
+                                ) < cutoff
                             ) {
                                 bambiPresence.delete(
                                     memberNumber
