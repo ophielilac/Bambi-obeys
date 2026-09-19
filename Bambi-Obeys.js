@@ -8,7 +8,7 @@
     // CONFIG
     // =========================================================
 
-    const BAMBI_VERSION = '1.5.8';
+    const BAMBI_VERSION = '1.5.9';
     const PRODUCT_NAME = 'Bambi Obeys';
 
     const BASE_URL =
