@@ -16,9 +16,6 @@
 (function () {
     'use strict';
 
-    // LSCG-style deployment:
-    // This tiny loader always pulls the newest hosted Bambi Obeys core
-    // on every page load.
     if (window.__BAMBI_OBEYS_LOADER_RAN__) return;
     window.__BAMBI_OBEYS_LOADER_RAN__ = true;
 
