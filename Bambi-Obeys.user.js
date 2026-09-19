@@ -3,14 +3,11 @@
 // @namespace    BC-Hypnosis
 // @version      1.0.1
 // @description  Bambi Obeys stable loader for Bondage Club
-// @match        https://bondageprojects.elementfx.com/*
-// @match        https://*.bondageprojects.elementfx.com/*
-// @match        https://bondage-europe.com/*
-// @match        https://*.bondage-europe.com/*
-// @match        https://bondageprojects.com/*
-// @match        https://*.bondageprojects.com/*
-// @match        https://bondage-asia.com/*
-// @match        https://*.bondage-asia.com/*
+// @QueenBambi
+// @match https://bondageprojects.elementfx.com/*
+// @match https://www.bondageprojects.elementfx.com/*
+// @match https://bondage-europe.com/*
+// @match https://www.bondage-europe.com/*
 // @grant        GM_addElement
 // @run-at       document-end
 // @updateURL    https://raw.githubusercontent.com/ophielilac/Bambi-obeys/main/Bambi-Obeys.user.js
