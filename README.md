@@ -14,6 +14,11 @@ javascript:(()=>{const s=document.createElement('script');s.src='https://ophieli
 ______________________________________________________________________________________________________________
                                                CHANGELOG:
 ______________________________________________________________________________________________________________
+                                                v1.6.1
+Bug fixes.
+fixed whitelist overide.
+Fixed Bambi Sleep and wake up triggers not fireing.
+______________________________________________________________________________________________________________
                                                 v1.6.0
 Fixed the "Authority" Tab to actually work.
 
