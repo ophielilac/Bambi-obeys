@@ -9,3 +9,23 @@ javascript:(()=>{const s=document.createElement('script');s.src='https://ophieli
 
 2. Create a new bookmark, and paste that code as the url.
 3. Once loaded into the club, simply click the bookmark. And boom! It's running!
+
+
+______________________________________________________________________________________________________________
+                                               CHANGELOG:
+______________________________________________________________________________________________________________
+                                                v1.6.0
+Fixed the "Authority" Tab to actually work.
+
+Removed the connect system, and replaced it with Authority.
+
+Made triggers have affects on the character. Right now only, "Bambi sleep", "Snap and forget". and "Bambi wake and obey" have effects on them.
+
+Added a customization tab.
+
+Updated Limits tab.
+
+Made cross room triggers a toggle, rather than a default.
+
+Updated the ui
+______________________________________________________________________________________________________________
