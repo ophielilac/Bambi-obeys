@@ -8,7 +8,7 @@
     // CONFIG
     // =========================================================
 
-    const BAMBI_VERSION = '1.5.9';
+    const BAMBI_VERSION = '1.6.0';
     const PRODUCT_NAME = 'Bambi Obeys';
 
     const BASE_URL =
@@ -27,33 +27,40 @@
         'https://ophielilac.github.io/Bambi-obeys/Bambi-Obeys.js';
 
     const SETTINGS_KEY =
+        'bambiObeysSettings_v6';
+
+    const LEGACY_SETTINGS_KEY =
         'bambiObeysSettings_v5';
 
-    const CONNECTIONS_KEY =
-        'bambiObeysConnections_v4';
-
-    const PENDING_KEY =
-        'bambiObeysPending_v4';
-
     const SLEEP_KEY =
+        'bambiObeysSleep_v3';
+
+    const LEGACY_SLEEP_KEY =
         'bambiObeysSleep_v2';
+
+    const CHAT_FORGET_KEY =
+        'bambiObeysChatForget_v1';
 
     const PROTOCOL =
         'BambiObeysMsg';
 
     // Targeted Bambi control traffic uses the same AccountBeep/Leash
-    // pattern used by LSCG for cross-server commands.
     const CROSS_SERVER_BEEP_TYPE =
         'Leash';
 
     const BAMBI_BEEP_MARKER =
         true;
 
-    const CONNECT_COMMAND =
-        ':Bambi Connect';
-
-    const DISCONNECT_COMMAND =
-        ':Bambi Disconnect';
+    const BCX_ACCESS_LEVEL = {
+        self: 0,
+        clubowner: 1,
+        owner: 2,
+        lover: 3,
+        mistress: 4,
+        whitelist: 5,
+        friend: 6,
+        public: 7
+    };
 
     const TRIGGERS = [
         {
@@ -140,19 +147,19 @@
 
     const DEFAULT_SETTINGS = {
         // Authority
-        authorityMode: 'connected',
+        authorityMode: 'owner',
         whitelist: '',
 
-        // General
+        // Incoming / range
         acceptIncoming: true,
-        autoAcceptConnections: false,
+        outOfRoomTriggers: true,
 
-        // Safety
+        // Limits / safety
         autoWakeMinutes: 30,
         autoWakeEnabled: true,
         enabledTriggers: {},
 
-        // Audio / limits
+        // Audio
         maxSimultaneous: 5,
         secondaryVolume: 0.40,
         fadeInMs: 150,
@@ -161,7 +168,7 @@
         cooldownMs: 0,
         maxTriggersPerMinute: 30,
 
-        // Labels
+        // Customization
         showBambiLabels: true,
         labelOpacity: 0.42,
         labelText: 'Bambi',
@@ -169,9 +176,9 @@
         labelYOffset: -30
     };
 
-    // =========================================================
+
     // STATE
-    // =========================================================
+
 
     let settings = clone(DEFAULT_SETTINGS);
 
@@ -187,14 +194,13 @@
     let tabContents = {};
     let versionText = null;
     let statusText = null;
-    let connectSelect = null;
     let targetSelect = null;
-    let pendingArea = null;
+    let targetMemberInput = null;
     let triggerSelect = null;
     let triggerDescription = null;
+    let authorityRoleStatus = null;
+    let whitelistInput = null;
 
-    const connectedUsers = new Map();
-    const pendingRequests = new Map();
     const bambiPresence = new Map();
 
     let bambiMod = null;
@@ -221,10 +227,16 @@
     };
     let sleepTimer = null;
 
-    // =========================================================
-    // HELPERS
-    // =========================================================
+    let chatForgetState = {
+        active: false,
+        cutoff: 0
+    };
+    const forgottenChatObjects = new WeakSet();
+    const forgottenChatSignatures = new Set();
+    let chatForgetObserver = null;
 
+
+    // HELPERS
     function clone(value) {
         try {
             return JSON.parse(JSON.stringify(value));
@@ -303,10 +315,13 @@
 
     function getFriendNumbers() {
         const result = new Set();
+        const player = typeof Player !== 'undefined' ? Player : null;
+        if (!player) return result;
+
         const possibleLists = [
-            Player?.FriendList,
-            Player?.Friends,
-            Player?.FriendNumbers
+            player.FriendList,
+            player.Friends,
+            player.FriendNumbers
         ];
 
         for (const list of possibleLists) {
@@ -327,15 +342,23 @@
     }
 
     function getOwnerNumber() {
+        const player = typeof Player !== 'undefined' ? Player : null;
+        if (!player) return 0;
+
         const candidates = [
-            Player?.OwnerNumber,
-            Player?.OwnerMemberNumber,
-            Player?.Owner?.MemberNumber,
-            Player?.Owner
+            player.OwnerNumber,
+            player.OwnerMemberNumber,
+            player.Owner?.MemberNumber,
+            player.Owner?.memberNumber,
+            player.Owner
         ];
 
         for (const value of candidates) {
-            const n = normalizeMemberNumber(value);
+            const n = normalizeMemberNumber(
+                typeof value === 'object'
+                    ? value?.MemberNumber ?? value?.memberNumber
+                    : value
+            );
             if (n) return n;
         }
 
@@ -352,13 +375,267 @@
         );
     }
 
+    function getBCXModAPI() {
+        try {
+            const bcx = window.bcx;
+            if (!bcx) return null;
+
+            const candidates = [];
+
+            if (typeof bcx.getModApi === 'function') {
+                for (const name of [
+                    'BondageClubExtended',
+                    'Bondage Club Extended',
+                    'BCX',
+                    'bcx'
+                ]) {
+                    try {
+                        const api = bcx.getModApi(name);
+                        if (api) candidates.push(api);
+                    } catch {}
+                }
+            }
+
+            if (bcx.api) candidates.push(bcx.api);
+            candidates.push(bcx);
+
+            return candidates.find(api => {
+                return api && (
+                    typeof api.getCharacterRole === 'function' ||
+                    typeof api.GetCharacterRole === 'function' ||
+                    typeof api.getRole === 'function'
+                );
+            }) || null;
+        } catch {
+            return null;
+        }
+    }
+
+    function getBCXCharacterRole(memberNumber) {
+        const member = normalizeMemberNumber(memberNumber);
+        if (!member) return null;
+
+        try {
+            const api = getBCXModAPI();
+            if (!api) return null;
+
+            const methods = [
+                'getCharacterRole',
+                'GetCharacterRole',
+                'getRole'
+            ];
+
+            for (const methodName of methods) {
+                if (typeof api[methodName] !== 'function') continue;
+
+                const role = api[methodName](member);
+                if (
+                    typeof role === 'string' &&
+                    Object.prototype.hasOwnProperty.call(
+                        BCX_ACCESS_LEVEL,
+                        role.toLowerCase()
+                    )
+                ) {
+                    return role.toLowerCase();
+                }
+            }
+        } catch (error) {
+            console.debug('Bambi Obeys: BCX role lookup unavailable', error);
+        }
+
+        return null;
+    }
+
+    function relationIsTrue(memberNumber, methodNames) {
+        const member = normalizeMemberNumber(memberNumber);
+        if (!member) return false;
+
+        const owners = [
+            typeof Player !== 'undefined' ? Player : null,
+            typeof ChatRoomCharacter !== 'undefined' ? ChatRoomCharacter : null
+        ];
+
+        for (const object of owners) {
+            if (!object) continue;
+
+            for (const methodName of methodNames) {
+                try {
+                    if (typeof object[methodName] === 'function') {
+                        if (object[methodName](member)) return true;
+                    }
+                } catch {}
+            }
+        }
+
+        return false;
+    }
+
+    function isMemberInPlayerWhitelist(memberNumber) {
+        const member = normalizeMemberNumber(memberNumber);
+        if (!member) return false;
+
+        const lists = [
+            typeof Player !== 'undefined' ? Player.WhiteList : null,
+            typeof Player !== 'undefined' ? Player.Whitelist : null,
+            typeof Player !== 'undefined' ? Player.WhiteListMembers : null
+        ];
+
+        for (const list of lists) {
+            if (!Array.isArray(list)) continue;
+
+            for (const entry of list) {
+                const number = normalizeMemberNumber(
+                    typeof entry === 'object'
+                        ? entry?.MemberNumber ?? entry?.memberNumber
+                        : entry
+                );
+
+                if (number === member) return true;
+            }
+        }
+
+        return relationIsTrue(member, [
+            'IsPlayerInWhitelist',
+            'IsInWhitelist',
+            'IsWhiteListed'
+        ]);
+    }
+
+    function isMemberFriend(memberNumber) {
+        const member = normalizeMemberNumber(memberNumber);
+        if (!member) return false;
+
+        if (getFriendNumbers().has(member)) return true;
+
+        return relationIsTrue(member, [
+            'IsFriendOfMemberNumber',
+            'IsFriendOf'
+        ]);
+    }
+
+    function isMemberLover(memberNumber) {
+        const member = normalizeMemberNumber(memberNumber);
+        if (!member) return false;
+
+        return relationIsTrue(member, [
+            'IsLoverOfMemberNumber',
+            'IsLoverOf',
+            'IsLover'
+        ]);
+    }
+
+    function isMemberOwner(memberNumber) {
+        const member = normalizeMemberNumber(memberNumber);
+        if (!member) return false;
+
+        if (member === getOwnerNumber()) return true;
+
+        return relationIsTrue(member, [
+            'IsOwnedByMemberNumber',
+            'IsOwnedBy'
+        ]);
+    }
+
+    function getBambiAccessLevel(memberNumber) {
+        const member = normalizeMemberNumber(memberNumber);
+        if (!member) return BCX_ACCESS_LEVEL.public;
+
+        const myNumber = normalizeMemberNumber(
+            typeof Player !== 'undefined' ? Player.MemberNumber : 0
+        );
+
+        if (member === myNumber) return BCX_ACCESS_LEVEL.self;
+
+        const bcxRole = getBCXCharacterRole(member);
+        if (bcxRole) {
+            return BCX_ACCESS_LEVEL[bcxRole] ?? BCX_ACCESS_LEVEL.public;
+        }
+
+        // owner -> lover -> whitelist -> friend -> public.
+        if (isMemberOwner(member)) return BCX_ACCESS_LEVEL.owner;
+        if (isMemberLover(member)) return BCX_ACCESS_LEVEL.lover;
+        if (isMemberInPlayerWhitelist(member)) return BCX_ACCESS_LEVEL.whitelist;
+        if (isMemberFriend(member)) return BCX_ACCESS_LEVEL.friend;
+
+        return BCX_ACCESS_LEVEL.public;
+    }
+
+    function getAuthorityMinimumLevel() {
+        switch (settings.authorityMode) {
+            case 'owner':
+                return BCX_ACCESS_LEVEL.owner;
+            case 'lover':
+                return BCX_ACCESS_LEVEL.lover;
+            case 'friends':
+                return BCX_ACCESS_LEVEL.friend;
+            case 'whitelist':
+                return BCX_ACCESS_LEVEL.whitelist;
+            case 'anyone':
+                return BCX_ACCESS_LEVEL.public;
+            default:
+                return BCX_ACCESS_LEVEL.owner;
+        }
+    }
+
+    function getAuthorityModeLabel() {
+        switch (settings.authorityMode) {
+            case 'owner': return 'Owner only';
+            case 'lover': return 'Lovers only';
+            case 'friends': return 'Friends only';
+            case 'whitelist': return 'Whitelist only';
+            case 'anyone': return 'Anyone';
+            default: return 'Owner only';
+        }
+    }
+
+    function getRoleName(memberNumber) {
+        const member = normalizeMemberNumber(memberNumber);
+        if (!member) return 'Unknown';
+
+        const customWhitelist = getWhitelist();
+        if (customWhitelist.has(member)) return 'Bambi whitelist';
+
+        const role = getBCXCharacterRole(member);
+        if (role) {
+            const labels = {
+                self: 'Self',
+                clubowner: 'Club owner',
+                owner: 'Owner',
+                lover: 'Lover',
+                mistress: 'Mistress',
+                whitelist: 'BCX whitelist',
+                friend: 'Friend',
+                public: 'Public'
+            };
+            return labels[role] || role;
+        }
+
+        const level = getBambiAccessLevel(member);
+        for (const [key, value] of Object.entries(BCX_ACCESS_LEVEL)) {
+            if (value === level) {
+                const labels = {
+                    self: 'Self',
+                    clubowner: 'Club owner',
+                    owner: 'Owner',
+                    lover: 'Lover',
+                    mistress: 'Mistress',
+                    whitelist: 'Whitelist',
+                    friend: 'Friend',
+                    public: 'Public'
+                };
+                return labels[key] || key;
+            }
+        }
+
+        return 'Public';
+    }
+
     function setStatus(text) {
         if (statusText) statusText.textContent = text || '';
     }
 
-    // =========================================================
+
     // STORAGE
-    // =========================================================
 
     function mergeSettings(saved) {
         if (!saved || typeof saved !== 'object') return;
@@ -383,17 +660,58 @@
         }
     }
 
-    function loadStorage() {
-        let savedSettings = null;
+    function migrateLegacySettings() {
+        let current = null;
+        let legacy = null;
 
         try {
-            savedSettings = JSON.parse(
-                localStorage.getItem(SETTINGS_KEY)
-            );
-            mergeSettings(savedSettings);
+            current = JSON.parse(localStorage.getItem(SETTINGS_KEY));
         } catch (error) {
-            console.error('Bambi Obeys: settings load failed', error);
+            console.debug('Bambi Obeys: current settings could not be parsed', error);
         }
+
+        try {
+            legacy = JSON.parse(localStorage.getItem(LEGACY_SETTINGS_KEY));
+        } catch (error) {
+            console.debug('Bambi Obeys: legacy settings could not be parsed', error);
+        }
+
+        if (current && typeof current === 'object') {
+            mergeSettings(current);
+
+            if (current.authorityMode === 'connected' ||
+                !['owner', 'lover', 'friends', 'whitelist', 'anyone'].includes(settings.authorityMode)) {
+                settings.authorityMode = 'owner';
+            }
+
+            return;
+        }
+
+        if (legacy && typeof legacy === 'object') {
+            const migrated = Object.assign({}, legacy);
+
+            // The old connection-based authority mode no longer exists.
+            if (migrated.authorityMode === 'connected' || !migrated.authorityMode) {
+                migrated.authorityMode = 'owner';
+            }
+
+            delete migrated.autoAcceptConnections;
+            mergeSettings(migrated);
+
+            try {
+                localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+            } catch (error) {
+                console.error('Bambi Obeys: failed to save migrated settings', error);
+            }
+
+            return;
+        }
+
+        mergeSettings(DEFAULT_SETTINGS);
+    }
+
+    function loadStorage() {
+        migrateLegacySettings();
 
         for (const trigger of TRIGGERS) {
             if (
@@ -407,53 +725,11 @@
         }
 
         try {
-            const saved = JSON.parse(
-                localStorage.getItem(CONNECTIONS_KEY)
-            );
+            let saved = JSON.parse(localStorage.getItem(SLEEP_KEY));
 
-            if (Array.isArray(saved)) {
-                connectedUsers.clear();
-
-                for (const entry of saved) {
-                    const memberNumber = normalizeMemberNumber(entry?.memberNumber);
-                    if (!memberNumber) continue;
-
-                    connectedUsers.set(memberNumber, {
-                        memberNumber,
-                        name: entry.name || 'Unknown'
-                    });
-                }
+            if (!saved) {
+                saved = JSON.parse(localStorage.getItem(LEGACY_SLEEP_KEY));
             }
-        } catch (error) {
-            console.error('Bambi Obeys: connections load failed', error);
-        }
-
-        try {
-            const saved = JSON.parse(
-                localStorage.getItem(PENDING_KEY)
-            );
-
-            if (Array.isArray(saved)) {
-                pendingRequests.clear();
-
-                for (const entry of saved) {
-                    const memberNumber = normalizeMemberNumber(entry?.memberNumber);
-                    if (!memberNumber) continue;
-
-                    pendingRequests.set(memberNumber, {
-                        memberNumber,
-                        name: entry.name || 'Unknown'
-                    });
-                }
-            }
-        } catch (error) {
-            console.error('Bambi Obeys: pending load failed', error);
-        }
-
-        try {
-            const saved = JSON.parse(
-                localStorage.getItem(SLEEP_KEY)
-            );
 
             if (saved?.active && Number(saved.startedAt) > 0) {
                 sleepState.active = true;
@@ -461,6 +737,19 @@
             }
         } catch (error) {
             console.error('Bambi Obeys: sleep state load failed', error);
+        }
+
+        try {
+            const saved = JSON.parse(
+                localStorage.getItem(CHAT_FORGET_KEY)
+            );
+
+            if (saved?.active && Number(saved.cutoff) > 0) {
+                chatForgetState.active = true;
+                chatForgetState.cutoff = Number(saved.cutoff);
+            }
+        } catch (error) {
+            console.error('Bambi Obeys: chat forget state load failed', error);
         }
     }
 
@@ -476,28 +765,6 @@
         }
     }
 
-    function saveConnections() {
-        try {
-            localStorage.setItem(
-                CONNECTIONS_KEY,
-                JSON.stringify([...connectedUsers.values()])
-            );
-        } catch (error) {
-            console.error('Bambi Obeys: connections save failed', error);
-        }
-    }
-
-    function savePendingRequests() {
-        try {
-            localStorage.setItem(
-                PENDING_KEY,
-                JSON.stringify([...pendingRequests.values()])
-            );
-        } catch (error) {
-            console.error('Bambi Obeys: pending save failed', error);
-        }
-    }
-
     function saveSleepState() {
         try {
             localStorage.setItem(
@@ -509,10 +776,19 @@
         }
     }
 
-    // =========================================================
-    // VERSION / UPDATE NOTIFICATIONS
-    // =========================================================
+    function saveChatForgetState() {
+        try {
+            localStorage.setItem(
+                CHAT_FORGET_KEY,
+                JSON.stringify(chatForgetState)
+            );
+        } catch (error) {
+            console.error('Bambi Obeys: chat forget state save failed', error);
+        }
+    }
 
+
+    // VERSION / UPDATE NOTIFICATIONS
     function compareVersions(a, b) {
         const left = String(a || '')
             .replace(/^v/i, '')
@@ -662,10 +938,8 @@
         }
     }
 
-    // =========================================================
-    // BC MODSDK
-    // =========================================================
 
+    // BC MODSDK
     function registerBambiMod() {
         if (
             typeof bcModSdk === 'undefined' ||
@@ -692,9 +966,8 @@
         }
     }
 
-    // =========================================================
+
     // AUDIO
-    // =========================================================
 
     function ensureAudioContext() {
         if (audioContext) return audioContext;
@@ -968,14 +1241,18 @@
         lastTriggerTime = now();
         triggerHistory.push(lastTriggerTime);
 
-        if (options.trackSleep !== false) {
+        if (!options.skipCharacterEffect) {
             const sleepIndex = triggerIndexByName('Bambi sleep');
             const wakeIndex = triggerIndexByName('Bambi wake and obey');
+            const forgetIndex = triggerIndexByName('Snap and forget');
 
             if (index === sleepIndex) {
-                startAutoWakeTimer();
+                startBambiSleepState();
             } else if (index === wakeIndex) {
-                cancelAutoWakeTimer();
+                clearBambiSleepState();
+                wakeCharacter();
+            } else if (index === forgetIndex) {
+                activateSnapAndForget();
             }
         }
 
@@ -993,20 +1270,70 @@
         setStatus('Stopped all Bambi audio.');
     }
 
-    // =========================================================
-    // AUTO WAKE
-    // =========================================================
 
-    function startAutoWakeTimer() {
-        cancelAutoWakeTimer(false);
+    // CHARACTER SLEEP / AUTO WAKE
+    function getLSCGSleepState() {
+        try {
+            if (typeof Player !== 'undefined' && Player?.LSCG?.StateModule?.SleepState) {
+                return Player.LSCG.StateModule.SleepState;
+            }
+        } catch {}
 
+        try {
+            if (window.LSCG?.StateModule?.SleepState) {
+                return window.LSCG.StateModule.SleepState;
+            }
+        } catch {}
+
+        return null;
+    }
+
+    function sleepCharacterIndefinitely() {
+        const sleepStateApi = getLSCGSleepState();
+
+        if (sleepStateApi && typeof sleepStateApi.Activate === 'function') {
+            try {
+                sleepStateApi.Activate();
+                return true;
+            } catch (error) {
+                console.error('Bambi Obeys: LSCG sleep activation failed', error);
+            }
+        }
+
+        console.warn(
+            'Bambi Obeys: LSCG SleepState.Activate() is unavailable. '
+            + 'Bambi cannot apply the same sleep effect on this client.'
+        );
+        return false;
+    }
+
+    function wakeCharacter() {
+        const sleepStateApi = getLSCGSleepState();
+
+        if (sleepStateApi && typeof sleepStateApi.Recover === 'function') {
+            try {
+                sleepStateApi.Recover(true);
+                return true;
+            } catch (error) {
+                console.error('Bambi Obeys: LSCG wake failed', error);
+            }
+        }
+
+        console.warn(
+            'Bambi Obeys: LSCG SleepState.Recover(true) is unavailable.'
+        );
+        return false;
+    }
+
+    function startBambiSleepState() {
         sleepState.active = true;
         sleepState.startedAt = now();
         saveSleepState();
+        sleepCharacterIndefinitely();
         scheduleRemainingWake();
     }
 
-    function cancelAutoWakeTimer(save = true) {
+    function clearBambiSleepState() {
         if (sleepTimer) {
             clearTimeout(sleepTimer);
             sleepTimer = null;
@@ -1014,8 +1341,7 @@
 
         sleepState.active = false;
         sleepState.startedAt = 0;
-
-        if (save) saveSleepState();
+        saveSleepState();
     }
 
     function scheduleRemainingWake() {
@@ -1024,8 +1350,11 @@
             sleepTimer = null;
         }
 
+        if (!sleepState.active) return;
+
+        sleepCharacterIndefinitely();
+
         if (
-            !sleepState.active ||
             !settings.autoWakeEnabled ||
             Number(settings.autoWakeMinutes) <= 0
         ) {
@@ -1051,73 +1380,48 @@
     function performAutoWake() {
         if (!sleepState.active) return;
 
+        clearBambiSleepState();
+        wakeCharacter();
+
         const wakeIndex = triggerIndexByName('Bambi wake and obey');
-
-        sleepState.active = false;
-        sleepState.startedAt = 0;
-        saveSleepState();
-
-        if (sleepTimer) {
-            clearTimeout(sleepTimer);
-            sleepTimer = null;
-        }
-
         if (wakeIndex >= 0) {
             playTrigger(wakeIndex, {
                 ignoreLocalSafety: false,
-                trackSleep: false
+                trackSleep: false,
+                skipCharacterEffect: true
             });
         }
     }
 
-    // =========================================================
+
     // AUTHORITY
-    // =========================================================
 
     function canTrigger(senderMemberNumber) {
         const sender = normalizeMemberNumber(senderMemberNumber);
         if (!sender) return false;
 
-        const whitelist = getWhitelist();
-        if (whitelist.has(sender)) return true;
+        // Bambi's own whitelist is always an explicit override.
+        const bambiWhitelist = getWhitelist();
+        if (bambiWhitelist.has(sender)) return true;
 
-        switch (settings.authorityMode) {
-            case 'owner':
-                return sender === getOwnerNumber();
+        if (settings.authorityMode === 'anyone') return true;
 
-            case 'friends':
-                return getFriendNumbers().has(sender);
-
-            case 'connected':
-                return connectedUsers.has(sender);
-
-            case 'anyone':
-                return true;
-
-            default:
-                return connectedUsers.has(sender);
+        // In Whitelist-only mode, the explicit Bambi whitelist is the
+        // access list. BCX's built-in whitelist is also honored when the
+        // same role is available from BCX.
+        if (settings.authorityMode === 'whitelist') {
+            return bambiWhitelist.has(sender) ||
+                getBambiAccessLevel(sender) === BCX_ACCESS_LEVEL.whitelist;
         }
+
+        const senderLevel = getBambiAccessLevel(sender);
+        const minimumLevel = getAuthorityMinimumLevel();
+
+        return senderLevel <= minimumLevel;
     }
 
-    // =========================================================
+
     // NETWORK
-    // =========================================================
-
-    function sendWhisper(memberNumber, content) {
-        if (typeof ServerSend !== 'function') return false;
-
-        try {
-            ServerSend('ChatRoomChat', {
-                Content: content,
-                Type: 'Whisper',
-                Target: normalizeMemberNumber(memberNumber)
-            });
-            return true;
-        } catch (error) {
-            console.error('Bambi Obeys: whisper failed', error);
-            return false;
-        }
-    }
 
     function sendBambiAccountMessage(targetMemberNumber, payload) {
         if (typeof ServerSend !== 'function') return false;
@@ -1149,7 +1453,7 @@
             const packet = {
                 Type: 'Hidden',
                 Content: PROTOCOL,
-                Sender: Player?.MemberNumber,
+                Sender: typeof Player !== 'undefined' ? Player.MemberNumber : 0,
                 Dictionary: [
                     {
                         message: payload
@@ -1168,141 +1472,58 @@
         }
     }
 
-    function sendBambiMessage(targetMemberNumber, payload) {
-        const target = normalizeMemberNumber(targetMemberNumber);
-
-        // Targeted control traffic goes through AccountBeep so it can cross
-        // America, Europe A, Europe B, and Asia server boundaries.
-        if (target) {
-            return sendBambiAccountMessage(target, payload);
-        }
-
-        // Broadcast/presence packets remain room-local because AccountBeep
-        // is inherently targeted to one account.
-        return sendBambiRoomMessage(null, payload);
-    }
-
     function announcePresence() {
-        const myNumber = normalizeMemberNumber(Player?.MemberNumber);
+        const myNumber = normalizeMemberNumber(
+            typeof Player !== 'undefined' ? Player.MemberNumber : 0
+        );
         if (!myNumber) return;
 
         sendBambiRoomMessage(null, {
             type: 'presence',
             memberNumber: myNumber,
-            name: Player?.Name || 'Bambi',
+            name: typeof Player !== 'undefined' ? Player.Name || 'Bambi' : 'Bambi',
             labelXOffset: Number(settings.labelXOffset),
             labelYOffset: Number(settings.labelYOffset)
         });
     }
 
-    function requestConnection(memberNumber) {
-        const target = normalizeMemberNumber(memberNumber);
-        const myNumber = normalizeMemberNumber(Player?.MemberNumber);
-
-        if (!target || target === myNumber) {
-            setStatus('You cannot connect to yourself.');
-            return;
-        }
-
-        if (connectedUsers.has(target)) {
-            setStatus(`${getCharacterName(target)} is already connected.`);
-            return;
-        }
-
-        const sent = sendBambiAccountMessage(target, {
-            type: 'connection_request',
-            targetMemberNumber: target,
-            senderName: Player?.Name || 'Bambi'
-        });
-
-        // Keep the old room whisper as a compatibility fallback for old
-        // Bambi versions that do not yet understand cross-server beeps.
-        if (sent) {
-            setStatus(`Connect request sent to ${getCharacterName(target)}`);
-        } else if (isInCurrentRoom(target) && sendWhisper(target, CONNECT_COMMAND)) {
-            setStatus(`Connect request sent to ${getCharacterName(target)}`);
-        } else {
-            setStatus('Could not send the connection request.');
-        }
-    }
-
-    function acceptConnection(memberNumber) {
-        const target = normalizeMemberNumber(memberNumber);
-        const myNumber = normalizeMemberNumber(Player?.MemberNumber);
-
-        if (!target || target === myNumber) return;
-
-        const name =
-            pendingRequests.get(target)?.name ||
-            getCharacterName(target);
-
-        pendingRequests.delete(target);
-        connectedUsers.set(target, {
-            memberNumber: target,
-            name
-        });
-
-        savePendingRequests();
-        saveConnections();
-
-        sendBambiMessage(target, {
-            type: 'connection_accepted',
-            targetMemberNumber: target,
-            senderName: Player?.Name || name || 'Bambi'
-        });
-
-        setStatus(`Connected to ${name}.`);
-        refreshAllUI();
-    }
-
-    function disconnectUser(memberNumber) {
-        const target = normalizeMemberNumber(memberNumber);
-        const myNumber = normalizeMemberNumber(Player?.MemberNumber);
-
-        if (!target || target === myNumber) return;
-
-        connectedUsers.delete(target);
-        saveConnections();
-
-        sendBambiMessage(target, {
-            type: 'connection_removed',
-            targetMemberNumber: target
-        });
-
-        setStatus(`Disconnected from ${getCharacterName(target)}.`);
-        refreshAllUI();
-    }
-
     function sendTriggerToUser(memberNumber, triggerIndex) {
         const target = normalizeMemberNumber(memberNumber);
-        const myNumber = normalizeMemberNumber(Player?.MemberNumber);
+        const myNumber = normalizeMemberNumber(
+            typeof Player !== 'undefined' ? Player.MemberNumber : 0
+        );
 
         if (!target) {
-            setStatus('Choose a target first.');
+            setStatus('Enter a Member Number or choose someone in the room.');
             return;
         }
 
         if (target === myNumber) {
-            setStatus('You cannot send a remote trigger to yourself.');
-            return;
-        }
-
-        if (!connectedUsers.has(target)) {
-            setStatus('Target is not connected.');
+            setStatus('Use Test Trigger Locally for yourself.');
             return;
         }
 
         if (!TRIGGERS[triggerIndex]) return;
 
+        if (!settings.outOfRoomTriggers && !isInCurrentRoom(target)) {
+            setStatus('Out of room triggers are disabled.');
+            return;
+        }
+
         if (
             sendBambiAccountMessage(target, {
                 type: 'trigger',
                 targetMemberNumber: target,
-                triggerIndex
+                triggerIndex,
+                senderName: typeof Player !== 'undefined' ? Player.Name || 'Bambi' : 'Bambi'
             })
         ) {
+            const targetName = isInCurrentRoom(target)
+                ? getCharacterName(target)
+                : `#${target}`;
+
             setStatus(
-                `Sent "${TRIGGERS[triggerIndex].name}" to ${getCharacterName(target)}`
+                `Sent "${TRIGGERS[triggerIndex].name}" to ${targetName}`
             );
         } else {
             setStatus('Could not send the trigger.');
@@ -1314,23 +1535,312 @@
 
         if (payload.type === 'presence') return true;
 
-        const myNumber = normalizeMemberNumber(Player?.MemberNumber);
+        const myNumber = normalizeMemberNumber(
+            typeof Player !== 'undefined' ? Player.MemberNumber : 0
+        );
         const target = normalizeMemberNumber(payload.targetMemberNumber);
 
         return target !== 0 && target === myNumber;
     }
 
-    // =========================================================
-    // MESSAGE HANDLING
-    // =========================================================
 
+    // SNAP AND FORGET
+
+    function muffleGagText(text) {
+        return String(text || '').replace(/\p{L}[\p{L}\p{N}'-]*/gu, 'Mmph');
+    }
+
+    function getChatDOMContainers() {
+        const selectors = [
+            '#TextAreaChatLog',
+            '#TextAreaChatLog2',
+            '#ChatRoomChatLog',
+            '.ChatRoomChatLog',
+            '[id*="ChatLog" i]'
+        ];
+
+        const found = [];
+        const seen = new Set();
+
+        for (const selector of selectors) {
+            let nodes = [];
+            try {
+                nodes = document.querySelectorAll(selector);
+            } catch {
+                nodes = [];
+            }
+
+            for (const node of nodes) {
+                if (!node || seen.has(node)) continue;
+                seen.add(node);
+                found.push(node);
+            }
+        }
+
+        return found.filter(node => {
+            const text = String(node.textContent || '').trim();
+            return text.length > 0;
+        });
+    }
+
+    function getDOMNodeTime(node) {
+        if (!node || typeof node.getAttribute !== 'function') return null;
+
+        const values = [
+            node.getAttribute('data-time'),
+            node.getAttribute('data-timestamp'),
+            node.getAttribute('data-created'),
+            node.getAttribute('data-date')
+        ];
+
+        for (const value of values) {
+            if (!value) continue;
+
+            const asNumber = Number(value);
+            if (Number.isFinite(asNumber)) {
+                return asNumber < 10000000000 ? asNumber * 1000 : asNumber;
+            }
+
+            const parsed = Date.parse(value);
+            if (Number.isFinite(parsed)) return parsed;
+        }
+
+        return null;
+    }
+
+    function muffleHistoricalChatDOM() {
+        if (!chatForgetState.active || !chatForgetState.cutoff) return;
+
+        for (const containerElement of getChatDOMContainers()) {
+            for (const child of [...containerElement.childNodes]) {
+                const timestamp = getDOMNodeTime(child);
+
+                if (timestamp !== null && timestamp <= chatForgetState.cutoff) {
+                    const signature = getNodeSignature(child);
+                    if (signature) forgottenChatSignatures.add(signature);
+                    forgottenChatObjects.add(child);
+                    muffleDOMTree(child);
+                }
+            }
+        }
+    }
+
+    function getNodeSignature(node) {
+        if (!node) return '';
+
+        const id = node.id || '';
+        const classes = typeof node.className === 'string'
+            ? node.className
+            : '';
+        const text = String(node.textContent || '').trim();
+        const member = node.getAttribute?.('data-membernumber') ||
+            node.getAttribute?.('data-member-number') || '';
+        const time = node.getAttribute?.('data-time') || '';
+
+        return `${id}|${classes}|${member}|${time}|${text}`;
+    }
+
+    function muffleDOMTree(node) {
+        if (!node) return;
+
+        if (node.nodeType === 3) {
+            node.nodeValue = muffleGagText(node.nodeValue || '');
+            return;
+        }
+
+        if (node.nodeType !== 1) return;
+
+        const tag = String(node.tagName || '').toLowerCase();
+        if (tag === 'script' || tag === 'style') return;
+
+        for (const child of [...node.childNodes]) {
+            muffleDOMTree(child);
+        }
+    }
+
+    function muffleExistingChatDOM() {
+        for (const containerElement of getChatDOMContainers()) {
+            for (const child of [...containerElement.childNodes]) {
+                const signature = getNodeSignature(child);
+                if (signature) forgottenChatSignatures.add(signature);
+                forgottenChatObjects.add(child);
+                muffleDOMTree(child);
+            }
+        }
+    }
+
+    function getChatLogArrays() {
+        const names = [
+            'ChatRoomChatLog',
+            'ChatRoomChatLogData',
+            'ChatRoomLog',
+            'ChatRoomChatHistory'
+        ];
+
+        const result = [];
+        const seen = new Set();
+
+        for (const name of names) {
+            try {
+                const value = window[name];
+                if (!Array.isArray(value) || seen.has(value)) continue;
+                seen.add(value);
+                result.push(value);
+            } catch {}
+        }
+
+        return result;
+    }
+
+    function getChatEntryTime(entry) {
+        if (!entry || typeof entry !== 'object') return null;
+
+        const candidates = [
+            entry.Timestamp,
+            entry.TimeStamp,
+            entry.Time,
+            entry.CreationTime,
+            entry.Date,
+            entry.timestamp,
+            entry.time,
+            entry.date
+        ];
+
+        for (const candidate of candidates) {
+            if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+                return candidate < 10000000000 ? candidate * 1000 : candidate;
+            }
+
+            if (typeof candidate === 'string') {
+                const parsed = Date.parse(candidate);
+                if (Number.isFinite(parsed)) return parsed;
+
+                const numeric = Number(candidate);
+                if (Number.isFinite(numeric)) {
+                    return numeric < 10000000000 ? numeric * 1000 : numeric;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    function muffleChatObject(entry) {
+        if (!entry || typeof entry !== 'object') return;
+        if (forgottenChatObjects.has(entry)) return;
+
+        forgottenChatObjects.add(entry);
+
+        const nameFields = [
+            'Name',
+            'MemberName',
+            'SenderName',
+            'Nickname',
+            'name',
+            'memberName',
+            'senderName',
+            'nickname'
+        ];
+
+        const textFields = [
+            'Content',
+            'Message',
+            'Text',
+            'content',
+            'message',
+            'text'
+        ];
+
+        for (const field of nameFields) {
+            if (typeof entry[field] === 'string') {
+                entry[field] = 'Mmph';
+            }
+        }
+
+        for (const field of textFields) {
+            if (typeof entry[field] === 'string') {
+                entry[field] = muffleGagText(entry[field]);
+            }
+        }
+    }
+
+    function muffleHistoricalChatData() {
+        if (!chatForgetState.active || !chatForgetState.cutoff) return;
+
+        for (const log of getChatLogArrays()) {
+            for (const entry of log) {
+                const timestamp = getChatEntryTime(entry);
+
+                if (timestamp !== null && timestamp <= chatForgetState.cutoff) {
+                    muffleChatObject(entry);
+                }
+            }
+        }
+    }
+
+    function installChatForgetObserver() {
+        if (chatForgetObserver || typeof MutationObserver === 'undefined') return;
+
+        const containers = getChatDOMContainers();
+        if (containers.length === 0) return;
+
+        chatForgetObserver = new MutationObserver(mutations => {
+            if (!chatForgetState.active) return;
+
+            for (const mutation of mutations) {
+                for (const node of mutation.addedNodes) {
+                    if (!node || node.nodeType !== 1) continue;
+
+                    const signature = getNodeSignature(node);
+                    if (signature && forgottenChatSignatures.has(signature)) {
+                        forgottenChatObjects.add(node);
+                        muffleDOMTree(node);
+                    }
+                }
+            }
+        });
+
+        for (const node of containers) {
+            try {
+                chatForgetObserver.observe(node, {
+                    childList: true,
+                    subtree: true
+                });
+            } catch {}
+        }
+    }
+
+    function activateSnapAndForget() {
+        chatForgetState.active = true;
+        chatForgetState.cutoff = now();
+        saveChatForgetState();
+
+        muffleExistingChatDOM();
+        muffleHistoricalChatData();
+        installChatForgetObserver();
+    }
+
+    function restoreSnapAndForget() {
+        if (!chatForgetState.active) return;
+
+        // After a page refresh, use timestamps when the chat exposes them
+        // so messages that happened after Snap and Forget stay clear.
+        muffleHistoricalChatData();
+        muffleHistoricalChatDOM();
+        installChatForgetObserver();
+    }
+
+
+    // MESSAGE HANDLING
     function processBambiPayload(senderMemberNumber, payload, senderName = '') {
         if (!payload || typeof payload !== 'object') return false;
 
         const sender = normalizeMemberNumber(senderMemberNumber);
         if (!sender) return false;
 
-        const myNumber = normalizeMemberNumber(Player?.MemberNumber);
+        const myNumber = normalizeMemberNumber(
+            typeof Player !== 'undefined' ? Player.MemberNumber : 0
+        );
         if (sender === myNumber) return true;
 
         const resolvedSenderName =
@@ -1339,9 +1849,6 @@
             getCharacterName(sender) ||
             'Unknown';
 
-        // ---------------------------------------------------------
-        // Presence
-        // ---------------------------------------------------------
         if (payload.type === 'presence') {
             let labelXOffset = Number(payload.labelXOffset);
             let labelYOffset = Number(payload.labelYOffset);
@@ -1362,62 +1869,6 @@
 
         if (!packetIsForMe(payload)) return true;
 
-        // ---------------------------------------------------------
-        // Connection request
-        // ---------------------------------------------------------
-        if (payload.type === 'connection_request') {
-            if (!connectedUsers.has(sender)) {
-                pendingRequests.set(sender, {
-                    memberNumber: sender,
-                    name: resolvedSenderName
-                });
-                savePendingRequests();
-                refreshAllUI();
-            }
-
-            if (settings.autoAcceptConnections) {
-                acceptConnection(sender);
-            } else {
-                setStatus(`Connection request from ${resolvedSenderName}.`);
-            }
-
-            return true;
-        }
-
-        // ---------------------------------------------------------
-        // Connection accepted
-        // ---------------------------------------------------------
-        if (payload.type === 'connection_accepted') {
-            const name =
-                resolvedSenderName !== 'Unknown'
-                    ? resolvedSenderName
-                    : getCharacterName(sender);
-
-            connectedUsers.set(sender, {
-                memberNumber: sender,
-                name
-            });
-
-            saveConnections();
-            refreshAllUI();
-            setStatus(`Connected to ${name}.`);
-            return true;
-        }
-
-        // ---------------------------------------------------------
-        // Connection removed
-        // ---------------------------------------------------------
-        if (payload.type === 'connection_removed') {
-            connectedUsers.delete(sender);
-            saveConnections();
-            refreshAllUI();
-            setStatus(`${resolvedSenderName} disconnected.`);
-            return true;
-        }
-
-        // ---------------------------------------------------------
-        // Trigger
-        // ---------------------------------------------------------
         if (payload.type === 'trigger') {
             const index = Number(payload.triggerIndex);
             if (!Number.isInteger(index) || !TRIGGERS[index]) return true;
@@ -1427,15 +1878,29 @@
                 return true;
             }
 
-            if (!canTrigger(sender)) {
+            if (!settings.outOfRoomTriggers && !isInCurrentRoom(sender)) {
                 console.log(
-                    'Bambi Obeys: trigger rejected by authority mode:',
+                    'Bambi Obeys: out-of-room trigger rejected for sender:',
                     sender
                 );
                 return true;
             }
 
-            playTrigger(index);
+            if (!canTrigger(sender)) {
+                console.log(
+                    'Bambi Obeys: trigger rejected by authority mode:',
+                    settings.authorityMode,
+                    'sender:',
+                    sender,
+                    'role:',
+                    getRoleName(sender)
+                );
+                return true;
+            }
+
+            playTrigger(index, {
+                senderMemberNumber: sender
+            });
             return true;
         }
 
@@ -1481,57 +1946,15 @@
             data.MemberName || payload.senderName || ''
         );
 
-        // Consume Bambi's private cross-server beep so it does not appear
-        // as an ordinary Bondage Club beep notification.
         return true;
     }
 
-    function handleBambiChatMessage(data) {
-        if (!data) return;
-
-        const sender = normalizeMemberNumber(data.Sender);
-        if (!sender || sender === normalizeMemberNumber(Player?.MemberNumber)) {
-            return;
-        }
-
-        const message = String(data.Content || '').trim();
-        if (!message) return;
-
-        // Compatibility with older Bambi versions that used ordinary
-        // whispers for connection requests/disconnects.
-        if (
-            data.Type === 'Whisper' &&
-            message.toLowerCase() === CONNECT_COMMAND.toLowerCase()
-        ) {
-            const name = data.MemberName || getCharacterName(sender);
-
-            if (!connectedUsers.has(sender)) {
-                pendingRequests.set(sender, {
-                    memberNumber: sender,
-                    name
-                });
-                savePendingRequests();
-                refreshAllUI();
-            }
-
-            if (settings.autoAcceptConnections) {
-                acceptConnection(sender);
-            } else {
-                setStatus(`Connection request from ${name}.`);
-            }
-
-            return;
-        }
-
-        if (
-            data.Type === 'Whisper' &&
-            message.toLowerCase() === DISCONNECT_COMMAND.toLowerCase()
-        ) {
-            connectedUsers.delete(sender);
-            saveConnections();
-            refreshAllUI();
-            return;
-        }
+    function installChatForgetHook() {
+        // ChatRoomMessage is already hooked below. This helper only ensures
+        // historical data is re-muffled if Bondage Club redraws its log.
+        if (!chatForgetState.active) return;
+        muffleHistoricalChatData();
+        installChatForgetObserver();
     }
 
     function installChatRoomSyncHook() {
@@ -1553,6 +1976,7 @@
                         setTimeout(() => {
                             announcePresence();
                             refreshRoomData();
+                            installChatForgetHook();
                         }, 50);
                     } catch {}
                     return result;
@@ -1582,7 +2006,10 @@
 
                     try {
                         handleBambiMessage(data);
-                        handleBambiChatMessage(data);
+
+                        // Snap and forget only affects messages that existed at
+                        // the moment the trigger fired. New chat is left alone.
+                        installChatForgetHook();
                     } catch (error) {
                         console.error('Bambi Obeys: message handling failed', error);
                     }
@@ -1638,10 +2065,7 @@
         }
     }
 
-    // =========================================================
     // BAMBI LABELS
-    // =========================================================
-
     function getMainCanvasContext() {
         try {
             if (
@@ -1791,9 +2215,8 @@
         }
     }
 
-    // =========================================================
+
     // UI HELPERS
-    // =========================================================
 
     function makeButton(label, onClick, primary = false) {
         const button = document.createElement('button');
@@ -1942,21 +2365,32 @@
         }
     }
 
-    // =========================================================
+
     // AUTHORITY TAB
-    // =========================================================
 
     function buildAuthorityTab(content) {
         const heading = document.createElement('div');
-        heading.textContent = 'Who can trigger Bambi';
+        heading.textContent = 'Trigger authority';
         heading.style.fontWeight = 'bold';
         heading.style.marginBottom = '7px';
         content.appendChild(heading);
 
+        const description = document.createElement('div');
+        description.textContent =
+            'Choose who is allowed to send Bambi triggers. This does not depend on connections.';
+        Object.assign(description.style, {
+            color: '#d994ba',
+            fontSize: '11px',
+            lineHeight: '1.4',
+            marginBottom: '10px'
+        });
+        content.appendChild(description);
+
         const modes = [
             ['owner', 'Owner only'],
+            ['lover', 'Lovers only'],
             ['friends', 'Friends only'],
-            ['connected', 'Anyone connected'],
+            ['whitelist', 'Whitelist only'],
             ['anyone', 'Anyone']
         ];
 
@@ -1965,7 +2399,8 @@
             Object.assign(row.style, {
                 display: 'flex',
                 gap: '7px',
-                marginBottom: '6px'
+                marginBottom: '7px',
+                cursor: 'pointer'
             });
 
             const input = document.createElement('input');
@@ -1978,6 +2413,7 @@
                 if (!input.checked) return;
                 settings.authorityMode = value;
                 saveSettings();
+                refreshAllUI();
             });
 
             const label = document.createElement('span');
@@ -1989,7 +2425,7 @@
         }
 
         const whitelistLabel = document.createElement('div');
-        whitelistLabel.textContent = 'Whitelist Member IDs';
+        whitelistLabel.textContent = 'Bambi whitelist Member Numbers';
         Object.assign(whitelistLabel.style, {
             color: '#ffb8d9',
             fontSize: '12px',
@@ -1998,12 +2434,12 @@
         });
         content.appendChild(whitelistLabel);
 
-        const whitelist = document.createElement('textarea');
-        whitelist.value = settings.whitelist;
-        whitelist.placeholder = '12345, 67890, 13579';
-        Object.assign(whitelist.style, {
+        whitelistInput = document.createElement('textarea');
+        whitelistInput.value = settings.whitelist;
+        whitelistInput.placeholder = '12345, 67890, 13579';
+        Object.assign(whitelistInput.style, {
             width: '100%',
-            minHeight: '55px',
+            minHeight: '60px',
             boxSizing: 'border-box',
             background: '#fff0f7',
             color: '#48172f',
@@ -2011,144 +2447,103 @@
             borderRadius: '5px',
             padding: '6px',
             resize: 'vertical',
-            marginBottom: '10px'
+            marginBottom: '8px'
         });
 
-        whitelist.addEventListener('change', () => {
-            settings.whitelist = whitelist.value;
+        whitelistInput.addEventListener('change', () => {
+            settings.whitelist = whitelistInput.value;
             saveSettings();
+            refreshAllUI();
         });
 
-        content.appendChild(whitelist);
-        content.appendChild(document.createElement('hr'));
+        content.appendChild(whitelistInput);
 
-        content.appendChild(
-            makeCheckbox(
-                'Automatically accept connection requests',
-                settings.autoAcceptConnections,
-                checked => {
-                    settings.autoAcceptConnections = checked;
-                    saveSettings();
-                }
-            )
-        );
+        const roleHeading = document.createElement('div');
+        roleHeading.textContent = 'Selected target access';
+        Object.assign(roleHeading.style, {
+            color: '#ffb8d9',
+            fontSize: '12px',
+            marginTop: '8px',
+            marginBottom: '4px'
+        });
+        content.appendChild(roleHeading);
 
-        content.appendChild(
-            makeButton(
-                'Disconnect selected user',
-                () => {
-                    if (selectedTarget) disconnectUser(selectedTarget);
-                },
-                false
-            )
-        );
-
-        const note = document.createElement('div');
-        note.textContent =
-            'Whitelist entries override the selected authority mode.';
-        Object.assign(note.style, {
+        authorityRoleStatus = document.createElement('div');
+        Object.assign(authorityRoleStatus.style, {
             fontSize: '11px',
             color: '#d994ba',
             lineHeight: '1.4',
-            marginTop: '4px'
+            minHeight: '34px'
+        });
+        content.appendChild(authorityRoleStatus);
+
+        const note = document.createElement('div');
+        note.textContent =
+            'Bambi uses BCX roles when BCX is available, with Bondage Club relationship data as a fallback. Bambi whitelist entries always grant access.';
+        Object.assign(note.style, {
+            fontSize: '10px',
+            color: '#b77d9e',
+            lineHeight: '1.4',
+            marginTop: '8px'
         });
         content.appendChild(note);
     }
 
-    // =========================================================
+
     // TRIGGERS TAB
-    // =========================================================
 
     function buildTriggersTab(content) {
-        const connectLabel = document.createElement('div');
-        connectLabel.textContent = 'Connect to';
-        Object.assign(connectLabel.style, {
+        const targetLabel = document.createElement('div');
+        targetLabel.textContent = 'Target';
+        Object.assign(targetLabel.style, {
             color: '#ffb8d9',
             fontSize: '12px',
             marginBottom: '4px'
         });
-        content.appendChild(connectLabel);
+        content.appendChild(targetLabel);
 
-        connectSelect = document.createElement('select');
-        styleSelect(connectSelect);
-        content.appendChild(connectSelect);
+        targetSelect = document.createElement('select');
+        styleSelect(targetSelect);
+        targetSelect.addEventListener('change', () => {
+            selectedTarget = targetSelect.value;
+            if (targetMemberInput) targetMemberInput.value = '';
+            refreshAuthorityRoleStatus();
+        });
+        content.appendChild(targetSelect);
 
-        content.appendChild(
-            makeButton(
-                '💗 Send :Bambi Connect',
-                () => {
-                    if (connectSelect?.value) {
-                        requestConnection(connectSelect.value);
-                    }
-                },
-                true
-            )
-        );
-
-        const remoteConnectLabel = document.createElement('div');
-        remoteConnectLabel.textContent = 'Or enter a Member Number for another server';
-        Object.assign(remoteConnectLabel.style, {
+        const remoteLabel = document.createElement('div');
+        remoteLabel.textContent = 'Or enter a Member Number';
+        Object.assign(remoteLabel.style, {
             color: '#ffb8d9',
             fontSize: '11px',
-            marginTop: '5px',
+            marginTop: '4px',
             marginBottom: '4px'
         });
-        content.appendChild(remoteConnectLabel);
+        content.appendChild(remoteLabel);
 
-        const remoteConnectInput = document.createElement('input');
-        remoteConnectInput.type = 'number';
-        remoteConnectInput.min = '1';
-        remoteConnectInput.placeholder = 'Member Number';
-        Object.assign(remoteConnectInput.style, {
+        targetMemberInput = document.createElement('input');
+        targetMemberInput.type = 'number';
+        targetMemberInput.min = '1';
+        targetMemberInput.placeholder = 'Member Number';
+        Object.assign(targetMemberInput.style, {
             width: '100%',
             padding: '7px',
-            marginBottom: '7px',
+            marginBottom: '8px',
             boxSizing: 'border-box',
             background: '#fff0f7',
             color: '#48172f',
             border: '1px solid #ff69b4',
             borderRadius: '5px'
         });
-        content.appendChild(remoteConnectInput);
 
-        content.appendChild(
-            makeButton(
-                '🌐 Connect by Member Number',
-                () => {
-                    const memberNumber = normalizeMemberNumber(remoteConnectInput.value);
-                    if (memberNumber) requestConnection(memberNumber);
-                },
-                false
-            )
-        );
-
-        const pendingHeading = document.createElement('div');
-        pendingHeading.textContent = 'Pending requests';
-        pendingHeading.style.fontWeight = 'bold';
-        pendingHeading.style.margin = '8px 0 5px';
-        content.appendChild(pendingHeading);
-
-        pendingArea = document.createElement('div');
-        content.appendChild(pendingArea);
-
-        const targetLabel = document.createElement('div');
-        targetLabel.textContent = 'Send to';
-        Object.assign(targetLabel.style, {
-            color: '#ffb8d9',
-            fontSize: '12px',
-            marginBottom: '4px',
-            marginTop: '8px'
-        });
-        content.appendChild(targetLabel);
-
-        targetSelect = document.createElement('select');
-        styleSelect(targetSelect);
-
-        targetSelect.addEventListener('change', () => {
-            selectedTarget = targetSelect.value;
+        targetMemberInput.addEventListener('input', () => {
+            const value = normalizeMemberNumber(targetMemberInput.value);
+            selectedTarget = value ? String(value) : '';
+            if (targetSelect) targetSelect.value = '';
+            refreshAuthorityRoleStatus();
         });
 
-        content.appendChild(targetSelect);
+        content.appendChild(targetMemberInput);
 
         const triggerLabel = document.createElement('div');
         triggerLabel.textContent = 'Trigger';
@@ -2181,7 +2576,7 @@
             fontSize: '11px',
             color: '#d994ba',
             lineHeight: '1.4',
-            minHeight: '42px',
+            minHeight: '46px',
             marginBottom: '8px'
         });
         content.appendChild(triggerDescription);
@@ -2190,12 +2585,15 @@
             makeButton(
                 '▶ Send Trigger',
                 () => {
-                    if (selectedTarget) {
-                        sendTriggerToUser(
-                            selectedTarget,
-                            selectedTrigger
-                        );
+                    const inputTarget = normalizeMemberNumber(targetMemberInput?.value);
+                    const finalTarget = inputTarget || normalizeMemberNumber(selectedTarget);
+
+                    if (!finalTarget) {
+                        setStatus('Choose a target or enter a Member Number.');
+                        return;
                     }
+
+                    sendTriggerToUser(finalTarget, selectedTrigger);
                 },
                 true
             )
@@ -2209,6 +2607,58 @@
             )
         );
 
+        const targetingNote = document.createElement('div');
+        targetingNote.textContent =
+            'Cross-server targets work through the Member Number field when out-of-room triggers are enabled.';
+        Object.assign(targetingNote.style, {
+            fontSize: '10px',
+            color: '#b77d9e',
+            lineHeight: '1.4'
+        });
+        content.appendChild(targetingNote);
+
+        refreshTriggerDescription();
+    }
+
+    function refreshTriggerDescription() {
+        if (!triggerDescription) return;
+        triggerDescription.textContent =
+            TRIGGERS[selectedTrigger]?.description || '';
+    }
+
+    function refreshAuthorityRoleStatus() {
+        if (!authorityRoleStatus) return;
+
+        const target = normalizeMemberNumber(
+            targetMemberInput?.value || selectedTarget
+        );
+
+        if (!target) {
+            authorityRoleStatus.textContent =
+                `Current authority: ${getAuthorityModeLabel()}. Select a target to inspect their role.`;
+            return;
+        }
+
+        const allowed = canTrigger(target);
+        const role = getRoleName(target);
+        const name = isInCurrentRoom(target)
+            ? getCharacterName(target)
+            : `Member #${target}`;
+
+        authorityRoleStatus.textContent =
+            `${name}: ${role}. ${allowed ? 'Allowed to send triggers.' : 'Not allowed to send triggers.'}`;
+    }
+
+
+    // LIMITS TAB
+
+    function buildLimitsTab(content) {
+        const heading = document.createElement('div');
+        heading.textContent = 'Trigger limits';
+        heading.style.fontWeight = 'bold';
+        heading.style.marginBottom = '8px';
+        content.appendChild(heading);
+
         content.appendChild(
             makeCheckbox(
                 'Accept incoming triggers',
@@ -2220,20 +2670,35 @@
             )
         );
 
-        refreshTriggerDescription();
-    }
+        content.appendChild(
+            makeCheckbox(
+                'Out of room triggers',
+                settings.outOfRoomTriggers,
+                checked => {
+                    settings.outOfRoomTriggers = checked;
+                    saveSettings();
+                    refreshAllUI();
+                }
+            )
+        );
 
-    function refreshTriggerDescription() {
-        if (!triggerDescription) return;
-        triggerDescription.textContent =
-            TRIGGERS[selectedTrigger]?.description || '';
-    }
+        const rangeNote = document.createElement('div');
+        rangeNote.textContent =
+            'When disabled, a trigger sender must be in the same room as Bambi. Cross-server or cross-room trigger packets are rejected.';
+        Object.assign(rangeNote.style, {
+            fontSize: '10px',
+            color: '#b77d9e',
+            lineHeight: '1.4',
+            marginBottom: '10px'
+        });
+        content.appendChild(rangeNote);
 
-    // =========================================================
-    // SAFETY TAB
-    // =========================================================
+        const autoHeading = document.createElement('div');
+        autoHeading.textContent = 'Sleep limit';
+        autoHeading.style.fontWeight = 'bold';
+        autoHeading.style.margin = '8px 0 7px';
+        content.appendChild(autoHeading);
 
-    function buildSafetyTab(content) {
         content.appendChild(
             makeCheckbox(
                 'Auto wake enabled',
@@ -2253,7 +2718,7 @@
                 60,
                 1,
                 settings.autoWakeMinutes,
-                value => value === 0 ? 'Disabled' : `${value} min`,
+                value => value === 0 ? 'Indefinite' : `${value} min`,
                 value => {
                     settings.autoWakeMinutes = value;
                     saveSettings();
@@ -2264,20 +2729,20 @@
 
         const explanation = document.createElement('div');
         explanation.textContent =
-            '0 minutes disables auto wake. The timer survives refreshes.';
+            'The Bambi sleep trigger itself is indefinite. This option only controls whether the separate auto-wake timer wakes her later.';
         Object.assign(explanation.style, {
-            fontSize: '11px',
-            color: '#d994ba',
+            fontSize: '10px',
+            color: '#b77d9e',
             lineHeight: '1.4',
-            marginBottom: '12px'
+            marginBottom: '10px'
         });
         content.appendChild(explanation);
 
-        const heading = document.createElement('div');
-        heading.textContent = 'Trigger safety';
-        heading.style.fontWeight = 'bold';
-        heading.style.marginBottom = '7px';
-        content.appendChild(heading);
+        const enabledHeading = document.createElement('div');
+        enabledHeading.textContent = 'Allowed triggers';
+        enabledHeading.style.fontWeight = 'bold';
+        enabledHeading.style.margin = '8px 0 7px';
+        content.appendChild(enabledHeading);
 
         TRIGGERS.forEach(trigger => {
             content.appendChild(
@@ -2301,11 +2766,16 @@
         );
     }
 
-    // =========================================================
-    // LIMITS TAB
-    // =========================================================
 
-    function buildLimitsTab(content) {
+    // CUSTOMIZATION TAB
+
+    function buildCustomizationTab(content) {
+        const heading = document.createElement('div');
+        heading.textContent = 'Audio';
+        heading.style.fontWeight = 'bold';
+        heading.style.marginBottom = '8px';
+        content.appendChild(heading);
+
         content.appendChild(
             makeNumberSlider(
                 'Maximum simultaneous layers',
@@ -2410,7 +2880,7 @@
         const labelHeading = document.createElement('div');
         labelHeading.textContent = 'Bambi label';
         labelHeading.style.fontWeight = 'bold';
-        labelHeading.style.margin = '12px 0 7px';
+        labelHeading.style.margin = '14px 0 7px';
         content.appendChild(labelHeading);
 
         content.appendChild(
@@ -2498,45 +2968,9 @@
         );
     }
 
-    // =========================================================
+
     // UI REFRESH
-    // =========================================================
 
-    function refreshConnectDropdown() {
-        if (!connectSelect) return;
-
-        const oldValue = connectSelect.value;
-        connectSelect.innerHTML = '';
-
-        const roomMembers = getRoomCharacters()
-            .map(character => ({
-                memberNumber: normalizeMemberNumber(character?.MemberNumber),
-                name: character?.Nickname || character?.Name || 'Unknown'
-            }))
-            .filter(entry => entry.memberNumber)
-            .filter(entry => {
-                return entry.memberNumber !== normalizeMemberNumber(Player?.MemberNumber);
-            });
-
-        if (roomMembers.length === 0) {
-            const option = document.createElement('option');
-            option.value = '';
-            option.textContent = 'No other users in room';
-            connectSelect.appendChild(option);
-            return;
-        }
-
-        for (const entry of roomMembers) {
-            const option = document.createElement('option');
-            option.value = String(entry.memberNumber);
-            option.textContent = entry.name;
-            connectSelect.appendChild(option);
-        }
-
-        if ([...connectSelect.options].some(option => option.value === oldValue)) {
-            connectSelect.value = oldValue;
-        }
-    }
 
     function refreshTargetDropdown() {
         if (!targetSelect) return;
@@ -2544,128 +2978,64 @@
         const oldValue = selectedTarget;
         targetSelect.innerHTML = '';
 
-        const allConnected = [...connectedUsers.values()]
+        const myNumber = normalizeMemberNumber(
+            typeof Player !== 'undefined' ? Player.MemberNumber : 0
+        );
+
+        const roomMembers = getRoomCharacters()
+            .map(character => ({
+                memberNumber: normalizeMemberNumber(character?.MemberNumber),
+                name: character?.Nickname || character?.Name || 'Unknown'
+            }))
+            .filter(entry => entry.memberNumber && entry.memberNumber !== myNumber)
             .sort((a, b) => String(a.name).localeCompare(String(b.name)));
 
-        if (allConnected.length === 0) {
-            selectedTarget = '';
+        if (roomMembers.length === 0) {
             const option = document.createElement('option');
             option.value = '';
-            option.textContent = 'No connected users';
+            option.textContent = 'No other users in room';
             targetSelect.appendChild(option);
-            return;
-        }
-
-        for (const user of allConnected) {
-            const option = document.createElement('option');
-            const inRoom = isInCurrentRoom(user.memberNumber);
-            option.value = String(user.memberNumber);
-            option.textContent = `${user.name || getCharacterName(user.memberNumber)}${inRoom ? '' : ' (cross-server)'}`;
-            targetSelect.appendChild(option);
-        }
-
-        if ([...targetSelect.options].some(option => option.value === oldValue)) {
-            targetSelect.value = oldValue;
         } else {
+            for (const entry of roomMembers) {
+                const option = document.createElement('option');
+                option.value = String(entry.memberNumber);
+                option.textContent = entry.name;
+                targetSelect.appendChild(option);
+            }
+        }
+
+        if (
+            oldValue &&
+            [...targetSelect.options].some(option => option.value === String(oldValue))
+        ) {
+            targetSelect.value = String(oldValue);
+        } else if (roomMembers.length > 0 && !targetMemberInput?.value) {
             selectedTarget = targetSelect.value || '';
         }
-    }
 
-    function refreshPendingArea() {
-        if (!pendingArea) return;
-
-        pendingArea.innerHTML = '';
-
-        if (pendingRequests.size === 0) {
-            const empty = document.createElement('div');
-            empty.textContent = 'No pending requests.';
-            Object.assign(empty.style, {
-                color: '#d994ba',
-                fontSize: '11px',
-                marginBottom: '8px'
-            });
-            pendingArea.appendChild(empty);
-            return;
-        }
-
-        for (const request of pendingRequests.values()) {
-            const row = document.createElement('div');
-            Object.assign(row.style, {
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                marginBottom: '6px'
-            });
-
-            const text = document.createElement('span');
-            text.textContent = request.name || 'Unknown';
-            text.style.flex = '1';
-            text.style.fontSize = '12px';
-
-            const accept = document.createElement('button');
-            accept.textContent = 'Accept';
-            Object.assign(accept.style, {
-                padding: '4px 7px',
-                cursor: 'pointer',
-                background: '#ff4fa3',
-                color: '#fff',
-                border: '1px solid #ff8fc7',
-                borderRadius: '4px'
-            });
-
-            accept.addEventListener('click', () => {
-                acceptConnection(request.memberNumber);
-            });
-
-            const reject = document.createElement('button');
-            reject.textContent = '×';
-            Object.assign(reject.style, {
-                padding: '4px 7px',
-                cursor: 'pointer',
-                background: '#6b3158',
-                color: '#fff',
-                border: '1px solid #9d477e',
-                borderRadius: '4px'
-            });
-
-            reject.addEventListener('click', () => {
-                pendingRequests.delete(request.memberNumber);
-                savePendingRequests();
-                refreshPendingArea();
-            });
-
-            row.appendChild(text);
-            row.appendChild(accept);
-            row.appendChild(reject);
-            pendingArea.appendChild(row);
-        }
+        refreshAuthorityRoleStatus();
     }
 
     function refreshStatus() {
         if (!statusText) return;
 
-        const total = connectedUsers.size;
-        const inRoom = [...connectedUsers.keys()].filter(
-            memberNumber => isInCurrentRoom(memberNumber)
-        ).length;
+        const authority = getAuthorityModeLabel();
+        const range = settings.outOfRoomTriggers ? 'Out-of-room: ON' : 'Out-of-room: OFF';
+        const bambiState = sleepState.active ? 'Sleeping' : 'Awake';
 
         statusText.textContent =
-            total === 0
-                ? 'No connected users.'
-                : `${total} connected${inRoom ? ` (${inRoom} in room)` : ''}`;
+            `${authority} · ${range} · ${bambiState}`;
     }
 
     function refreshAllUI() {
-        refreshConnectDropdown();
         refreshTargetDropdown();
-        refreshPendingArea();
         refreshStatus();
         refreshTriggerDescription();
+        refreshAuthorityRoleStatus();
     }
 
-    // =========================================================
+
     // DRAGGING
-    // =========================================================
 
     function makeDraggable(element, handle) {
         let dragging = false;
@@ -2725,9 +3095,7 @@
         });
     }
 
-    // =========================================================
     // UI
-    // =========================================================
 
     function createUI() {
         if (container) return;
@@ -2844,7 +3212,7 @@
         tabs = {};
         tabContents = {};
 
-        for (const name of ['Authority', 'Triggers', 'Safety', 'Limits']) {
+        for (const name of ['Authority', 'Triggers', 'Limits', 'Customization']) {
             const tabButton = document.createElement('button');
             tabButton.textContent = name;
             Object.assign(tabButton.style, {
@@ -2864,7 +3232,7 @@
 
         panel.appendChild(tabBar);
 
-        for (const name of ['Authority', 'Triggers', 'Safety', 'Limits']) {
+        for (const name of ['Authority', 'Triggers', 'Limits', 'Customization']) {
             const content = createContentArea();
             content.style.display = name === activeTab ? 'block' : 'none';
             tabContents[name] = content;
@@ -2873,8 +3241,8 @@
 
         buildAuthorityTab(tabContents.Authority);
         buildTriggersTab(tabContents.Triggers);
-        buildSafetyTab(tabContents.Safety);
         buildLimitsTab(tabContents.Limits);
+        buildCustomizationTab(tabContents.Customization);
 
         container.appendChild(floatingButton);
         container.appendChild(panel);
@@ -2896,9 +3264,8 @@
         refreshAllUI();
     }
 
-    // =========================================================
+
     // ROOM MAINTENANCE
-    // =========================================================
 
     function refreshRoomData() {
         const currentMembers = new Set(
@@ -2913,26 +3280,13 @@
             }
         }
 
-        for (const [memberNumber, user] of connectedUsers) {
-            if (currentMembers.has(memberNumber)) {
-                user.name = getCharacterName(memberNumber);
-            }
-        }
-
-        for (const [memberNumber, user] of pendingRequests) {
-            if (currentMembers.has(memberNumber)) {
-                user.name = getCharacterName(memberNumber);
-            }
-        }
-
-        saveConnections();
         announcePresence();
         refreshAllUI();
+        installChatForgetHook();
     }
 
-    // =========================================================
+
     // INIT
-    // =========================================================
 
     loadStorage();
     installAudioUnlock();
@@ -2968,6 +3322,7 @@
 
         createUI();
         scheduleRemainingWake();
+        restoreSnapAndForget();
         checkVersionUpdate();
 
         setTimeout(() => {
