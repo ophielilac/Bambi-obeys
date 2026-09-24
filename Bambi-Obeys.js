@@ -7,7 +7,7 @@
 
     // CONFIG
 
-    const BAMBI_VERSION = '1.6.2';
+    const BAMBI_VERSION = '1.6.3';
     const PRODUCT_NAME = 'Bambi Obeys';
 
     const BASE_URL =
@@ -236,7 +236,6 @@
     const forgottenChatObjects = new WeakSet();
     const forgottenChatSignatures = new Set();
     let chatForgetObserver = null;
-    let sleepOverlay = null;
 
 
     // HELPERS
@@ -1701,38 +1700,11 @@
         return false;
     }
 
-    function createSleepOverlay() {
-        if (sleepOverlay) return sleepOverlay;
-
-        sleepOverlay = document.createElement('div');
-
-        Object.assign(sleepOverlay.style, {
-            position: 'fixed',
-            left: '0',
-            top: '0',
-            width: '100vw',
-            height: '100vh',
-            background: '#000',
-            display: 'none',
-            pointerEvents: 'auto',
-            zIndex: '2147483646'
-        });
-
-        document.body.appendChild(sleepOverlay);
-        return sleepOverlay;
-    }
-
-    function setSleepOverlay(active) {
-        const overlay = createSleepOverlay();
-        overlay.style.display = active ? 'block' : 'none';
-    }
-
     function startBambiSleepState() {
         if (sleepState.active) {
             setBambiSleepExpression();
             fallDownIfPossible();
             addBambiForceKneel();
-            setSleepOverlay(true);
             scheduleRemainingWake();
             return;
         }
@@ -1743,8 +1715,6 @@
         saveSleepState();
 
         sleepCharacterIndefinitely();
-        setSleepOverlay(true);
-
         scheduleRemainingWake();
     }
 
@@ -1759,7 +1729,6 @@
         sleepState.active = false;
         sleepState.startedAt = 0;
 
-        setSleepOverlay(false);
         saveSleepState();
     }
 
@@ -1772,11 +1741,8 @@
         }
 
         if (!sleepState.active) {
-            setSleepOverlay(false);
             return;
         }
-
-        setSleepOverlay(true);
 
         if (
             !settings.autoWakeEnabled ||
@@ -2673,16 +2639,14 @@
 
         hook(
             'ChatRoomSync',
-            11,
+            10,
             (args, next) => {
                 const result = next(args);
 
                 if (sleepState.active) {
-                    setTimeout(() => {
-                        setBambiSleepExpression();
-                        fallDownIfPossible();
-                        addBambiForceKneel();
-                    }, 50);
+                    setBambiSleepExpression();
+                    fallDownIfPossible();
+                    addBambiForceKneel();
                 }
 
                 return result;
@@ -2691,7 +2655,7 @@
 
         hook(
             'TimerProcess',
-            11,
+            10,
             (args, next) => {
                 const result = next(args);
 
@@ -2707,7 +2671,7 @@
 
         hook(
             'Player.CanTalk',
-            2,
+            1,
             (args, next) => {
                 if (sleepState.active) {
                     return false;
@@ -2720,7 +2684,7 @@
         // LSCG's SleepState only restricts walking while immersive.
         hook(
             'Player.CanWalk',
-            2,
+            1,
             (args, next) => {
                 if (
                     sleepState.active &&
@@ -2735,7 +2699,7 @@
 
         hook(
             'Player.CanChangeClothesOn',
-            2,
+            1,
             (args, next) => {
                 if (sleepState.active) {
                     return false;
@@ -2747,7 +2711,7 @@
 
         hook(
             'Player.GetDeafLevel',
-            2,
+            1,
             (args, next) => {
                 if (sleepState.active) {
                     return 4;
@@ -2757,9 +2721,12 @@
             }
         );
 
+        // This is the important part of LSCG's sleep vision behavior.
+        // Bondage Club uses the blind level to hide the room view and
+        // sensory-dependent chat while still keeping the sleeper visible.
         hook(
             'Player.GetBlindLevel',
-            2,
+            1,
             (args, next) => {
                 if (sleepState.active) {
                     try {
@@ -2778,7 +2745,7 @@
 
         hook(
             'Player.CanInteract',
-            2,
+            1,
             (args, next) => {
                 if (sleepState.active) {
                     return false;
@@ -2790,7 +2757,7 @@
 
         hook(
             'InventoryGroupIsBlockedForCharacter',
-            2,
+            1,
             (args, next) => {
                 if (sleepState.active) {
                     return true;
@@ -2802,7 +2769,7 @@
 
         hook(
             'ChatRoomCanAttemptStand',
-            2,
+            1,
             (args, next) => {
                 if (sleepState.active) {
                     return false;
@@ -2812,11 +2779,9 @@
             }
         );
 
-
-
         hook(
             'PoseCanChangeUnaided',
-            7,
+            6,
             (args, next) => {
                 if (sleepState.active) {
                     return false;
@@ -2828,7 +2793,7 @@
 
         hook(
             'DialogFacialExpressionsLoad',
-            6,
+            5,
             (args, next) => {
                 if (sleepState.active) {
                     return;
@@ -2838,9 +2803,70 @@
             }
         );
 
+        // These are the same expression-menu restrictions LSCG installs
+        // for the Eyes and Emoticon restrictions on SleepState.
+        try {
+            if (
+                typeof DialogSelfMenuMapping !== 'undefined' &&
+                DialogSelfMenuMapping?.Expression?.clickStatusCallbacks
+            ) {
+                DialogSelfMenuMapping.Expression.clickStatusCallbacks.bambiObeys =
+                    (C, clickedExpression) => {
+                        if (!sleepState.active) return null;
+
+                        if (clickedExpression.Group !== 'Emoticon') {
+                            return 'Movement restricted by LSCG';
+                        }
+
+                        switch (clickedExpression.Group) {
+                            case 'Eyes':
+                                return 'Eyes restricted by LSCG';
+                            case 'Emoticon':
+                                return 'Emoticon restricted by LSCG';
+                            default:
+                                return null;
+                        }
+                    };
+            }
+
+            const menubarValidator = () => {
+                if (!sleepState.active) {
+                    return null;
+                }
+
+                return {
+                    state: 'disabled',
+                    status: 'Movement restricted by LSCG'
+                };
+            };
+
+            if (
+                typeof DialogSelfMenuMapping !== 'undefined' &&
+                DialogSelfMenuMapping?.Expression?.menubarEventListeners
+            ) {
+                const blink =
+                    DialogSelfMenuMapping.Expression.menubarEventListeners.blink;
+                const clear =
+                    DialogSelfMenuMapping.Expression.menubarEventListeners.clear;
+
+                if (blink) {
+                    (blink.validate ??= {}).bambiObeys = menubarValidator;
+                }
+
+                if (clear) {
+                    (clear.validate ??= {}).bambiObeys = menubarValidator;
+                }
+            }
+        } catch (error) {
+            console.debug(
+                'Bambi Obeys: expression menu restrictions unavailable',
+                error
+            );
+        }
+
         hook(
             'ServerSend',
-            11,
+            5,
             (args, next) => {
                 if (
                     sleepState.active &&
@@ -4260,8 +4286,6 @@
         clearInterval(initInterval);
 
         createUI();
-        createSleepOverlay();
-        setSleepOverlay(sleepState.active);
         scheduleRemainingWake();
         restoreSnapAndForget();
         checkVersionUpdate();
