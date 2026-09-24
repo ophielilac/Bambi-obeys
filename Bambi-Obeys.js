@@ -4,11 +4,10 @@
     if (window.__BAMBI_OBEYS_CORE_LOADED__) return;
     window.__BAMBI_OBEYS_CORE_LOADED__ = true;
 
-    // =========================================================
-    // CONFIG
-    // =========================================================
 
-    const BAMBI_VERSION = '1.6.0';
+    // CONFIG
+
+    const BAMBI_VERSION = '1.6.1';
     const PRODUCT_NAME = 'Bambi Obeys';
 
     const BASE_URL =
@@ -200,12 +199,15 @@
     let triggerDescription = null;
     let authorityRoleStatus = null;
     let whitelistInput = null;
+    let whitelistLabelElement = null;
 
     const bambiPresence = new Map();
+    const pendingTriggerRequests = new Map();
 
     let bambiMod = null;
     let bambiMessageHookInstalled = false;
     let bambiDrawHookInstalled = false;
+    let bambiSleepHooksInstalled = false;
 
     let audioContext = null;
     const audioBuffers = new Map();
@@ -1249,8 +1251,8 @@
             if (index === sleepIndex) {
                 startBambiSleepState();
             } else if (index === wakeIndex) {
+                wakeCharacter(true);
                 clearBambiSleepState();
-                wakeCharacter();
             } else if (index === forgetIndex) {
                 activateSnapAndForget();
             }
@@ -1272,124 +1274,550 @@
 
 
     // CHARACTER SLEEP / AUTO WAKE
-    function getLSCGSleepState() {
-        try {
-            if (typeof Player !== 'undefined' && Player?.LSCG?.StateModule?.SleepState) {
-                return Player.LSCG.StateModule.SleepState;
-            }
-        } catch {}
 
+    function getLSCGStateSettings() {
         try {
-            if (window.LSCG?.StateModule?.SleepState) {
-                return window.LSCG.StateModule.SleepState;
+            if (
+                typeof Player !== 'undefined' &&
+                Player?.LSCG?.StateModule
+            ) {
+                return Player.LSCG.StateModule;
             }
         } catch {}
 
         return null;
     }
 
-    function sleepCharacterIndefinitely() {
-        const sleepStateApi = getLSCGSleepState();
+    function getLSCGSleepConfig() {
+        const stateSettings =
+            getLSCGStateSettings();
 
-        if (sleepStateApi && typeof sleepStateApi.Activate === 'function') {
-            try {
-                sleepStateApi.Activate();
-                return true;
-            } catch (error) {
-                console.error('Bambi Obeys: LSCG sleep activation failed', error);
-            }
+        if (
+            !stateSettings ||
+            !Array.isArray(stateSettings.states)
+        ) {
+            return null;
         }
 
-        console.warn(
-            'Bambi Obeys: LSCG SleepState.Activate() is unavailable. '
-            + 'Bambi cannot apply the same sleep effect on this client.'
-        );
+        let config =
+            stateSettings.states.find(
+                state => state?.type === 'asleep'
+            );
+
+        if (!config) {
+            config = {
+                type: 'asleep',
+                active: false,
+                activationCount: 0,
+                extensions: {}
+            };
+
+            stateSettings.states.push(config);
+        }
+
+        return config;
+    }
+
+    function getLSCGSleepState() {
+        try {
+            if (
+                typeof Player !== 'undefined' &&
+                Player?.LSCG?.StateModule?.SleepState
+            ) {
+                return Player.LSCG.StateModule.SleepState;
+            }
+        } catch {}
+
+        try {
+            if (
+                window.LSCG?.StateModule?.SleepState
+            ) {
+                return window.LSCG.StateModule.SleepState;
+            }
+        } catch {}
+
+        try {
+            if (
+                typeof window.LSCG?.getModule === 'function'
+            ) {
+                const stateModule =
+                    window.LSCG.getModule('StateModule');
+
+                if (stateModule?.SleepState) {
+                    return stateModule.SleepState;
+                }
+            }
+        } catch {}
+
+        return null;
+    }
+
+    function isLSCGImmersive() {
+        try {
+            const stateSettings =
+                getLSCGStateSettings();
+
+            if (
+                stateSettings &&
+                typeof stateSettings.immersive === 'boolean'
+            ) {
+                return stateSettings.immersive;
+            }
+        } catch {}
+
+        try {
+            const sleepStateApi =
+                getLSCGSleepState();
+
+            const stateModule =
+                sleepStateApi?.StateModule;
+
+            if (
+                stateModule &&
+                typeof stateModule.settings?.immersive === 'boolean'
+            ) {
+                return stateModule.settings.immersive;
+            }
+        } catch {}
+
         return false;
     }
 
-    function wakeCharacter() {
-        const sleepStateApi = getLSCGSleepState();
+    function addBambiForceKneel() {
+        try {
+            if (typeof addCustomEffect === 'function') {
+                addCustomEffect(
+                    Player,
+                    'ForceKneel'
+                );
+                return true;
+            }
+        } catch {}
 
-        if (sleepStateApi && typeof sleepStateApi.Recover === 'function') {
+        return false;
+    }
+
+    function removeBambiForceKneel() {
+        try {
+            if (typeof removeCustomEffect === 'function') {
+                removeCustomEffect(
+                    Player,
+                    'ForceKneel'
+                );
+                return true;
+            }
+        } catch {}
+
+        return false;
+    }
+
+    function setBambiSleepExpression(duration) {
+        try {
+            if (
+                typeof CharacterSetFacialExpression !==
+                'function'
+            ) {
+                return;
+            }
+
+            if (!!duration) {
+                CharacterSetFacialExpression(
+                    Player,
+                    'Eyes',
+                    'Closed',
+                    duration / 1000
+                );
+
+                CharacterSetFacialExpression(
+                    Player,
+                    'Emoticon',
+                    'Sleep',
+                    duration / 1000
+                );
+            } else {
+                CharacterSetFacialExpression(
+                    Player,
+                    'Eyes',
+                    'Closed'
+                );
+
+                CharacterSetFacialExpression(
+                    Player,
+                    'Emoticon',
+                    'Sleep'
+                );
+            }
+        } catch (error) {
+            console.error(
+                'Bambi Obeys: sleep expression failed',
+                error
+            );
+        }
+    }
+
+    function fallDownIfPossible() {
+        try {
+            if (
+                typeof PoseSetActive === 'function' &&
+                typeof Player !== 'undefined' &&
+                typeof Player.CanKneel === 'function' &&
+                Player.CanKneel()
+            ) {
+                PoseSetActive(
+                    Player,
+                    'Kneel',
+                    true
+                );
+            }
+        } catch (error) {
+            console.debug(
+                'Bambi Obeys: kneel state could not be applied',
+                error
+            );
+        }
+    }
+
+    function releaseAllBambiGrabs() {
+        // LSCG calls LeashingModule.ReleaseAllLeashingsAsSource().
+        // The module is internal to LSCG, so use any exposed equivalent
+        // that the current client makes available.
+        try {
+            const api =
+                getLSCGSleepState();
+
+            const module =
+                api?.StateModule?.LeashingModule ||
+                window.LSCG?.LeashingModule;
+
+            if (
+                module &&
+                typeof module.ReleaseAllLeashingsAsSource ===
+                'function'
+            ) {
+                module.ReleaseAllLeashingsAsSource();
+                return true;
+            }
+        } catch {}
+
+        try {
+            if (
+                typeof Player !== 'undefined' &&
+                typeof Player.ReleaseAllLeashingsAsSource ===
+                'function'
+            ) {
+                Player.ReleaseAllLeashingsAsSource();
+                return true;
+            }
+        } catch {}
+
+        return false;
+    }
+
+    function saveLSCGSleepConfig(
+        config
+    ) {
+        if (!config) return;
+
+        try {
+            if (typeof settingsSave === 'function') {
+                settingsSave(true);
+                return;
+            }
+        } catch {}
+
+        try {
+            if (typeof localStorage !== 'undefined') {
+                const playerState =
+                    getLSCGStateSettings();
+
+                if (
+                    playerState &&
+                    typeof playerState === 'object'
+                ) {
+                    // LSCG owns the actual persistent settings format.
+                    // Do not attempt to recreate its complete storage key.
+                }
+            }
+        } catch {}
+    }
+
+    function replicateLSCGSleepActivate(
+        memberNumber
+    ) {
+        try {
+            SendAction(
+                "%NAME% slumps weakly as %PRONOUN% slips into unconciousness."
+            );
+        } catch {}
+
+        setBambiSleepExpression();
+
+        fallDownIfPossible();
+
+        releaseAllBambiGrabs();
+
+        addBambiForceKneel();
+
+        const config =
+            getLSCGSleepConfig();
+
+        if (config) {
+            config.active = true;
+            config.activatedAt = Date.now();
+            config.activatedBy =
+                normalizeMemberNumber(memberNumber) || -1;
+            config.activationCount =
+                Number(config.activationCount) + 1;
+            config.duration = undefined;
+            saveLSCGSleepConfig(config);
+        }
+    }
+
+    function replicateLSCGSleepRecover(
+        emote = true
+    ) {
+        try {
+            if (emote) {
+                SendAction(
+                    "%NAME%'s eyelids flutter and start to open sleepily..."
+                );
+            }
+        } catch {}
+
+        try {
+            if (
+                typeof CharacterSetFacialExpression ===
+                'function'
+            ) {
+                CharacterSetFacialExpression(
+                    Player,
+                    'Eyes',
+                    'Dazed',
+                    15
+                );
+
+                if (
+                    typeof WardrobeGetExpression ===
+                    'function' &&
+                    WardrobeGetExpression(
+                        Player
+                    )?.Emoticon ===
+                    'Sleep'
+                ) {
+                    CharacterSetFacialExpression(
+                        Player,
+                        'Emoticon',
+                        null
+                    );
+                }
+            }
+        } catch (error) {
+            console.error(
+                'Bambi Obeys: wake expression failed',
+                error
+            );
+        }
+
+        removeBambiForceKneel();
+
+        const config =
+            getLSCGSleepConfig();
+
+        if (config) {
+            config.active = false;
+            config.recoveredAt = Date.now();
+            saveLSCGSleepConfig(config);
+        }
+    }
+
+    function sleepCharacterIndefinitely() {
+        const sleepStateApi =
+            getLSCGSleepState();
+
+        // Use LSCG's actual SleepState object whenever
+        // the client exposes it.
+        if (
+            sleepStateApi &&
+            typeof sleepStateApi.Activate ===
+            'function'
+        ) {
             try {
-                sleepStateApi.Recover(true);
+                sleepStateApi.Activate(
+                    typeof Player !== 'undefined'
+                        ? Player.MemberNumber
+                        : -1,
+                    undefined,
+                    true
+                );
                 return true;
             } catch (error) {
-                console.error('Bambi Obeys: LSCG wake failed', error);
+                console.error(
+                    'Bambi Obeys: LSCG sleep activation failed',
+                    error
+                );
             }
         }
 
-        console.warn(
-            'Bambi Obeys: LSCG SleepState.Recover(true) is unavailable.'
+        // Fallback: replicate LSCG's SleepState.Activate().
+        replicateLSCGSleepActivate(
+            typeof Player !== 'undefined'
+                ? Player.MemberNumber
+                : -1
         );
+
+        return false;
+    }
+
+    function wakeCharacter(
+        emote = true
+    ) {
+        const sleepStateApi =
+            getLSCGSleepState();
+
+        if (
+            sleepStateApi &&
+            typeof sleepStateApi.Recover ===
+            'function'
+        ) {
+            try {
+                sleepStateApi.Recover(
+                    emote
+                );
+                return true;
+            } catch (error) {
+                console.error(
+                    'Bambi Obeys: LSCG wake failed',
+                    error
+                );
+            }
+        }
+
+        // Fallback: replicate LSCG's SleepState.Recover().
+        replicateLSCGSleepRecover(
+            emote
+        );
+
         return false;
     }
 
     function startBambiSleepState() {
+        if (sleepState.active) {
+            setBambiSleepExpression();
+            fallDownIfPossible();
+            addBambiForceKneel();
+            scheduleRemainingWake();
+            return;
+        }
+
         sleepState.active = true;
         sleepState.startedAt = now();
+
         saveSleepState();
+
         sleepCharacterIndefinitely();
+
         scheduleRemainingWake();
     }
 
     function clearBambiSleepState() {
         if (sleepTimer) {
-            clearTimeout(sleepTimer);
+            clearTimeout(
+                sleepTimer
+            );
             sleepTimer = null;
         }
 
         sleepState.active = false;
         sleepState.startedAt = 0;
+
         saveSleepState();
     }
 
     function scheduleRemainingWake() {
         if (sleepTimer) {
-            clearTimeout(sleepTimer);
+            clearTimeout(
+                sleepTimer
+            );
             sleepTimer = null;
         }
 
-        if (!sleepState.active) return;
-
-        sleepCharacterIndefinitely();
+        if (!sleepState.active) {
+            return;
+        }
 
         if (
             !settings.autoWakeEnabled ||
             Number(settings.autoWakeMinutes) <= 0
         ) {
+            // Indefinite sleep, exactly like an LSCG SleepState with no duration.
+            if (!getLSCGSleepState()) {
+                setBambiSleepExpression();
+                fallDownIfPossible();
+                addBambiForceKneel();
+            }
+
             return;
         }
 
-        const total = Math.max(
-            0,
-            Number(settings.autoWakeMinutes)
-        ) * 60 * 1000;
+        const total =
+            Math.max(
+                0,
+                Number(settings.autoWakeMinutes)
+            ) *
+            60 *
+            1000;
 
-        const elapsed = now() - sleepState.startedAt;
-        const remaining = Math.max(0, total - elapsed);
+        const elapsed =
+            now() -
+            sleepState.startedAt;
+
+        const remaining =
+            Math.max(
+                0,
+                total - elapsed
+            );
 
         if (remaining <= 0) {
             performAutoWake();
             return;
         }
 
-        sleepTimer = setTimeout(performAutoWake, remaining);
+        // Keep the exact LSCG sleep state active while the auto-wake timer runs.
+        if (!getLSCGSleepState()) {
+            setBambiSleepExpression();
+            fallDownIfPossible();
+            addBambiForceKneel();
+        }
+
+        sleepTimer =
+            setTimeout(
+                performAutoWake,
+                remaining
+            );
     }
 
     function performAutoWake() {
-        if (!sleepState.active) return;
+        if (!sleepState.active) {
+            return;
+        }
 
+        wakeCharacter(true);
         clearBambiSleepState();
-        wakeCharacter();
 
-        const wakeIndex = triggerIndexByName('Bambi wake and obey');
+        const wakeIndex =
+            triggerIndexByName(
+                'Bambi wake and obey'
+            );
+
         if (wakeIndex >= 0) {
-            playTrigger(wakeIndex, {
-                ignoreLocalSafety: false,
-                trackSleep: false,
-                skipCharacterEffect: true
-            });
+            playTrigger(
+                wakeIndex,
+                {
+                    ignoreLocalSafety: false,
+                    trackSleep: false,
+                    skipCharacterEffect: true
+                }
+            );
         }
     }
 
@@ -1400,18 +1828,13 @@
         const sender = normalizeMemberNumber(senderMemberNumber);
         if (!sender) return false;
 
-        // Bambi's own whitelist is always an explicit override.
-        const bambiWhitelist = getWhitelist();
-        if (bambiWhitelist.has(sender)) return true;
+        if (settings.authorityMode === 'anyone') {
+            return true;
+        }
 
-        if (settings.authorityMode === 'anyone') return true;
-
-        // In Whitelist-only mode, the explicit Bambi whitelist is the
-        // access list. BCX's built-in whitelist is also honored when the
-        // same role is available from BCX.
+        // The Bambi whitelist is only active while Whitelist only is selected.
         if (settings.authorityMode === 'whitelist') {
-            return bambiWhitelist.has(sender) ||
-                getBambiAccessLevel(sender) === BCX_ACCESS_LEVEL.whitelist;
+            return getWhitelist().has(sender);
         }
 
         const senderLevel = getBambiAccessLevel(sender);
@@ -1487,6 +1910,10 @@
         });
     }
 
+    function createTriggerRequestId() {
+        return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    }
+
     function sendTriggerToUser(memberNumber, triggerIndex) {
         const target = normalizeMemberNumber(memberNumber);
         const myNumber = normalizeMemberNumber(
@@ -1510,24 +1937,47 @@
             return;
         }
 
-        if (
-            sendBambiAccountMessage(target, {
-                type: 'trigger',
-                targetMemberNumber: target,
-                triggerIndex,
-                senderName: typeof Player !== 'undefined' ? Player.Name || 'Bambi' : 'Bambi'
-            })
-        ) {
-            const targetName = isInCurrentRoom(target)
-                ? getCharacterName(target)
-                : `#${target}`;
+        const requestId = createTriggerRequestId();
 
-            setStatus(
-                `Sent "${TRIGGERS[triggerIndex].name}" to ${targetName}`
+        pendingTriggerRequests.set(
+            requestId,
+            {
+                memberNumber: target,
+                triggerIndex
+            }
+        );
+
+        const sent =
+            sendBambiAccountMessage(
+                target,
+                {
+                    type: 'trigger',
+                    targetMemberNumber: target,
+                    triggerIndex,
+                    requestId,
+                    senderName:
+                        typeof Player !== 'undefined'
+                            ? Player.Name || 'Bambi'
+                            : 'Bambi'
+                }
             );
-        } else {
+
+        if (!sent) {
+            pendingTriggerRequests.delete(requestId);
             setStatus('Could not send the trigger.');
+            return;
         }
+
+        setStatus('Sent');
+
+        setTimeout(() => {
+            if (!pendingTriggerRequests.has(requestId)) {
+                return;
+            }
+
+            pendingTriggerRequests.delete(requestId);
+            setStatus('No response');
+        }, 8000);
     }
 
     function packetIsForMe(payload) {
@@ -1841,6 +2291,7 @@
         const myNumber = normalizeMemberNumber(
             typeof Player !== 'undefined' ? Player.MemberNumber : 0
         );
+
         if (sender === myNumber) return true;
 
         const resolvedSenderName =
@@ -1867,22 +2318,72 @@
             return true;
         }
 
+        if (payload.type === 'trigger_result') {
+            const requestId = String(payload.requestId || '');
+            if (!requestId) return true;
+
+            const pending = pendingTriggerRequests.get(requestId);
+            if (!pending) return true;
+
+            pendingTriggerRequests.delete(requestId);
+
+            if (payload.accepted === true) {
+                const targetName = isInCurrentRoom(sender)
+                    ? getCharacterName(sender)
+                    : `#${sender}`;
+
+                setStatus(
+                    `Sent "${TRIGGERS[pending.triggerIndex]?.name || 'trigger'}" to ${targetName}`
+                );
+            } else {
+                setStatus('No access');
+            }
+
+            return true;
+        }
+
         if (!packetIsForMe(payload)) return true;
 
         if (payload.type === 'trigger') {
             const index = Number(payload.triggerIndex);
-            if (!Number.isInteger(index) || !TRIGGERS[index]) return true;
 
-            if (!settings.acceptIncoming) {
-                console.log('Bambi Obeys: incoming triggers are disabled.');
+            if (
+                !Number.isInteger(index) ||
+                !TRIGGERS[index]
+            ) {
                 return true;
             }
 
-            if (!settings.outOfRoomTriggers && !isInCurrentRoom(sender)) {
-                console.log(
-                    'Bambi Obeys: out-of-room trigger rejected for sender:',
-                    sender
+            const resultRequestId =
+                String(payload.requestId || '');
+
+            const sendResult = (accepted, reason = '') => {
+                if (!resultRequestId) return;
+
+                sendBambiAccountMessage(
+                    sender,
+                    {
+                        type: 'trigger_result',
+                        targetMemberNumber: sender,
+                        requestId: resultRequestId,
+                        accepted,
+                        reason
+                    }
                 );
+            };
+
+            if (!settings.acceptIncoming) {
+                setStatus('No access');
+                sendResult(false, 'no_access');
+                return true;
+            }
+
+            if (
+                !settings.outOfRoomTriggers &&
+                !isInCurrentRoom(sender)
+            ) {
+                setStatus('No access');
+                sendResult(false, 'out_of_room');
                 return true;
             }
 
@@ -1895,12 +2396,20 @@
                     'role:',
                     getRoleName(sender)
                 );
+
+                setStatus('No access');
+                sendResult(false, 'no_access');
                 return true;
             }
 
-            playTrigger(index, {
-                senderMemberNumber: sender
-            });
+            sendResult(true);
+            playTrigger(
+                index,
+                {
+                    senderMemberNumber: sender
+                }
+            );
+
             return true;
         }
 
@@ -2064,6 +2573,243 @@
             return false;
         }
     }
+
+    // CHARACTER SLEEP HOOKS
+
+    function installBambiSleepHooks() {
+        if (bambiSleepHooksInstalled) {
+            return true;
+        }
+
+        if (
+            !bambiMod ||
+            typeof bambiMod.hookFunction !== 'function'
+        ) {
+            return false;
+        }
+
+        const hook = (name, priority, callback) => {
+            try {
+                bambiMod.hookFunction(
+                    name,
+                    priority,
+                    callback
+                );
+                return true;
+            } catch (error) {
+                console.debug(
+                    `Bambi Obeys: ${name} sleep hook unavailable`,
+                    error
+                );
+                return false;
+            }
+        };
+
+        hook(
+            'ChatRoomSync',
+            11,
+            (args, next) => {
+                const result = next(args);
+
+                if (sleepState.active) {
+                    setTimeout(() => {
+                        setBambiSleepExpression();
+                        fallDownIfPossible();
+                        addBambiForceKneel();
+                    }, 50);
+                }
+
+                return result;
+            }
+        );
+
+        hook(
+            'TimerProcess',
+            11,
+            (args, next) => {
+                const result = next(args);
+
+                if (sleepState.active) {
+                    setBambiSleepExpression();
+                    fallDownIfPossible();
+                    addBambiForceKneel();
+                }
+
+                return result;
+            }
+        );
+
+        hook(
+            'Player.CanTalk',
+            2,
+            (args, next) => {
+                if (sleepState.active) {
+                    return false;
+                }
+
+                return next(args);
+            }
+        );
+
+        // LSCG's SleepState only restricts walking while immersive.
+        hook(
+            'Player.CanWalk',
+            2,
+            (args, next) => {
+                if (
+                    sleepState.active &&
+                    isLSCGImmersive()
+                ) {
+                    return false;
+                }
+
+                return next(args);
+            }
+        );
+
+        hook(
+            'Player.CanChangeClothesOn',
+            2,
+            (args, next) => {
+                if (sleepState.active) {
+                    return false;
+                }
+
+                return next(args);
+            }
+        );
+
+        hook(
+            'Player.GetDeafLevel',
+            2,
+            (args, next) => {
+                if (sleepState.active) {
+                    return 4;
+                }
+
+                return next(args);
+            }
+        );
+
+        hook(
+            'Player.GetBlindLevel',
+            2,
+            (args, next) => {
+                if (sleepState.active) {
+                    try {
+                        return Player.GameplaySettings?.SensDepChatLog ===
+                            'SensDepLight'
+                            ? 2
+                            : 3;
+                    } catch {
+                        return 3;
+                    }
+                }
+
+                return next(args);
+            }
+        );
+
+        hook(
+            'Player.CanInteract',
+            2,
+            (args, next) => {
+                if (sleepState.active) {
+                    return false;
+                }
+
+                return next(args);
+            }
+        );
+
+        hook(
+            'InventoryGroupIsBlockedForCharacter',
+            2,
+            (args, next) => {
+                if (sleepState.active) {
+                    return true;
+                }
+
+                return next(args);
+            }
+        );
+
+        hook(
+            'ChatRoomCanAttemptStand',
+            2,
+            (args, next) => {
+                if (sleepState.active) {
+                    return false;
+                }
+
+                return next(args);
+            }
+        );
+
+
+
+        hook(
+            'PoseCanChangeUnaided',
+            7,
+            (args, next) => {
+                if (sleepState.active) {
+                    return false;
+                }
+
+                return next(args);
+            }
+        );
+
+        hook(
+            'DialogFacialExpressionsLoad',
+            6,
+            (args, next) => {
+                if (sleepState.active) {
+                    return;
+                }
+
+                return next(args);
+            }
+        );
+
+        hook(
+            'ServerSend',
+            11,
+            (args, next) => {
+                if (
+                    sleepState.active &&
+                    args[0] === 'ChatRoomChat' &&
+                    args[1]?.Type === 'Chat' &&
+                    String(args[1]?.Content || '')[0] !== '('
+                ) {
+                    try {
+                        if (typeof SendAction === 'function') {
+                            SendAction(
+                                [
+                                    "%NAME%'s eyes move dreamily under %POSSESSIVE% closed eyelids...",
+                                    "%NAME% exhales slowly, fully relaxed...",
+                                    "%NAME%'s muscles twitch weakly in %POSSESSIVE% sleep...",
+                                    "%NAME% moans softly and relaxes..."
+                                ][
+                                    Math.floor(
+                                        Math.random() * 4
+                                    )
+                                ]
+                            );
+                        }
+                    } catch {}
+
+                    return null;
+                }
+
+                return next(args);
+            }
+        );
+
+        bambiSleepHooksInstalled = true;
+        return true;
+    }
+
 
     // BAMBI LABELS
     function getMainCanvasContext() {
@@ -2407,11 +3153,14 @@
             input.type = 'radio';
             input.name = 'bambi-authority';
             input.value = value;
-            input.checked = settings.authorityMode === value;
+            input.checked =
+                settings.authorityMode === value;
 
             input.addEventListener('change', () => {
                 if (!input.checked) return;
+
                 settings.authorityMode = value;
+
                 saveSettings();
                 refreshAllUI();
             });
@@ -2424,69 +3173,143 @@
             content.appendChild(row);
         }
 
-        const whitelistLabel = document.createElement('div');
-        whitelistLabel.textContent = 'Bambi whitelist Member Numbers';
-        Object.assign(whitelistLabel.style, {
-            color: '#ffb8d9',
-            fontSize: '12px',
-            marginTop: '12px',
-            marginBottom: '4px'
-        });
-        content.appendChild(whitelistLabel);
+        whitelistLabelElement =
+            document.createElement('div');
 
-        whitelistInput = document.createElement('textarea');
-        whitelistInput.value = settings.whitelist;
-        whitelistInput.placeholder = '12345, 67890, 13579';
-        Object.assign(whitelistInput.style, {
-            width: '100%',
-            minHeight: '60px',
-            boxSizing: 'border-box',
-            background: '#fff0f7',
-            color: '#48172f',
-            border: '1px solid #ff69b4',
-            borderRadius: '5px',
-            padding: '6px',
-            resize: 'vertical',
-            marginBottom: '8px'
-        });
+        whitelistLabelElement.textContent =
+            'Bambi whitelist Member Numbers';
 
-        whitelistInput.addEventListener('change', () => {
-            settings.whitelist = whitelistInput.value;
-            saveSettings();
-            refreshAllUI();
-        });
+        Object.assign(
+            whitelistLabelElement.style,
+            {
+                color: '#ffb8d9',
+                fontSize: '12px',
+                marginTop: '12px',
+                marginBottom: '4px'
+            }
+        );
 
-        content.appendChild(whitelistInput);
+        content.appendChild(
+            whitelistLabelElement
+        );
 
-        const roleHeading = document.createElement('div');
-        roleHeading.textContent = 'Selected target access';
-        Object.assign(roleHeading.style, {
-            color: '#ffb8d9',
-            fontSize: '12px',
-            marginTop: '8px',
-            marginBottom: '4px'
-        });
-        content.appendChild(roleHeading);
+        whitelistInput =
+            document.createElement('textarea');
 
-        authorityRoleStatus = document.createElement('div');
-        Object.assign(authorityRoleStatus.style, {
-            fontSize: '11px',
-            color: '#d994ba',
-            lineHeight: '1.4',
-            minHeight: '34px'
-        });
-        content.appendChild(authorityRoleStatus);
+        whitelistInput.value =
+            settings.whitelist;
 
-        const note = document.createElement('div');
+        whitelistInput.placeholder =
+            '12345, 67890, 13579';
+
+        Object.assign(
+            whitelistInput.style,
+            {
+                width: '100%',
+                minHeight: '60px',
+                boxSizing: 'border-box',
+                background: '#fff0f7',
+                color: '#48172f',
+                border: '1px solid #ff69b4',
+                borderRadius: '5px',
+                padding: '6px',
+                resize: 'vertical',
+                marginBottom: '4px'
+            }
+        );
+
+        whitelistInput.addEventListener(
+            'change',
+            () => {
+                // Keep the saved list even when the mode changes.
+                settings.whitelist =
+                    whitelistInput.value;
+
+                saveSettings();
+                refreshAllUI();
+            }
+        );
+
+        content.appendChild(
+            whitelistInput
+        );
+
+        const whitelistNote =
+            document.createElement('div');
+
+        whitelistNote.textContent =
+            'Whitelist entries are only active while Whitelist only is selected. Your saved IDs stay here when another authority mode is selected.';
+
+        Object.assign(
+            whitelistNote.style,
+            {
+                fontSize: '10px',
+                color: '#b77d9e',
+                lineHeight: '1.4',
+                marginBottom: '8px'
+            }
+        );
+
+        content.appendChild(
+            whitelistNote
+        );
+
+        const roleHeading =
+            document.createElement('div');
+
+        roleHeading.textContent =
+            'Selected target access';
+
+        Object.assign(
+            roleHeading.style,
+            {
+                color: '#ffb8d9',
+                fontSize: '12px',
+                marginTop: '8px',
+                marginBottom: '4px'
+            }
+        );
+
+        content.appendChild(
+            roleHeading
+        );
+
+        authorityRoleStatus =
+            document.createElement('div');
+
+        Object.assign(
+            authorityRoleStatus.style,
+            {
+                fontSize: '11px',
+                color: '#d994ba',
+                lineHeight: '1.4',
+                minHeight: '34px'
+            }
+        );
+
+        content.appendChild(
+            authorityRoleStatus
+        );
+
+        const note =
+            document.createElement('div');
+
         note.textContent =
-            'Bambi uses BCX roles when BCX is available, with Bondage Club relationship data as a fallback. Bambi whitelist entries always grant access.';
-        Object.assign(note.style, {
-            fontSize: '10px',
-            color: '#b77d9e',
-            lineHeight: '1.4',
-            marginTop: '8px'
-        });
+            'Authority follows BCX access levels when available. Higher-authority roles retain access to lower minimum levels, the same way BCX permissions work.';
+
+        Object.assign(
+            note.style,
+            {
+                fontSize: '10px',
+                color: '#b77d9e',
+                lineHeight: '1.4',
+                marginTop: '8px'
+            }
+        );
+
         content.appendChild(note);
+
+        refreshAuthorityControls();
     }
 
 
@@ -2624,6 +3447,54 @@
         if (!triggerDescription) return;
         triggerDescription.textContent =
             TRIGGERS[selectedTrigger]?.description || '';
+    }
+
+
+    function refreshAuthorityControls() {
+        const whitelistEnabled =
+            settings.authorityMode === 'whitelist';
+
+        if (whitelistInput) {
+            whitelistInput.disabled =
+                !whitelistEnabled;
+
+            whitelistInput.style.background =
+                whitelistEnabled
+                    ? '#fff0f7'
+                    : '#5a4a52';
+
+            whitelistInput.style.color =
+                whitelistEnabled
+                    ? '#48172f'
+                    : '#aaa';
+
+            whitelistInput.style.borderColor =
+                whitelistEnabled
+                    ? '#ff69b4'
+                    : '#777';
+
+            whitelistInput.style.cursor =
+                whitelistEnabled
+                    ? 'text'
+                    : 'not-allowed';
+
+            whitelistInput.style.opacity =
+                whitelistEnabled
+                    ? '1'
+                    : '0.55';
+        }
+
+        if (whitelistLabelElement) {
+            whitelistLabelElement.style.color =
+                whitelistEnabled
+                    ? '#ffb8d9'
+                    : '#777';
+
+            whitelistLabelElement.style.opacity =
+                whitelistEnabled
+                    ? '1'
+                    : '0.65';
+        }
     }
 
     function refreshAuthorityRoleStatus() {
@@ -3031,6 +3902,7 @@
         refreshTargetDropdown();
         refreshStatus();
         refreshTriggerDescription();
+        refreshAuthorityControls();
         refreshAuthorityRoleStatus();
     }
 
@@ -3312,8 +4184,9 @@
         installChatRoomSyncHook();
         installBambiLabelHook();
         installBambiAccountBeepHook();
+        installBambiSleepHooks();
 
-        if (!bambiMessageHookInstalled || !bambiDrawHookInstalled || !window.__BAMBI_OBEYS_SYNC_HOOK_INSTALLED__ || !window.__BAMBI_OBEYS_ACCOUNT_BEEP_HOOK_INSTALLED__) {
+        if (!bambiMessageHookInstalled || !bambiDrawHookInstalled || !bambiSleepHooksInstalled || !window.__BAMBI_OBEYS_SYNC_HOOK_INSTALLED__ || !window.__BAMBI_OBEYS_ACCOUNT_BEEP_HOOK_INSTALLED__) {
             if (initAttempts > 1200) clearInterval(initInterval);
             return;
         }
