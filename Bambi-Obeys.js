@@ -7,7 +7,7 @@
 
     // CONFIG
 
-    const BAMBI_VERSION = '1.6.1';
+    const BAMBI_VERSION = '1.6.2';
     const PRODUCT_NAME = 'Bambi Obeys';
 
     const BASE_URL =
@@ -236,6 +236,7 @@
     const forgottenChatObjects = new WeakSet();
     const forgottenChatSignatures = new Set();
     let chatForgetObserver = null;
+    let sleepOverlay = null;
 
 
     // HELPERS
@@ -1700,11 +1701,38 @@
         return false;
     }
 
+    function createSleepOverlay() {
+        if (sleepOverlay) return sleepOverlay;
+
+        sleepOverlay = document.createElement('div');
+
+        Object.assign(sleepOverlay.style, {
+            position: 'fixed',
+            left: '0',
+            top: '0',
+            width: '100vw',
+            height: '100vh',
+            background: '#000',
+            display: 'none',
+            pointerEvents: 'auto',
+            zIndex: '2147483646'
+        });
+
+        document.body.appendChild(sleepOverlay);
+        return sleepOverlay;
+    }
+
+    function setSleepOverlay(active) {
+        const overlay = createSleepOverlay();
+        overlay.style.display = active ? 'block' : 'none';
+    }
+
     function startBambiSleepState() {
         if (sleepState.active) {
             setBambiSleepExpression();
             fallDownIfPossible();
             addBambiForceKneel();
+            setSleepOverlay(true);
             scheduleRemainingWake();
             return;
         }
@@ -1715,6 +1743,7 @@
         saveSleepState();
 
         sleepCharacterIndefinitely();
+        setSleepOverlay(true);
 
         scheduleRemainingWake();
     }
@@ -1730,6 +1759,7 @@
         sleepState.active = false;
         sleepState.startedAt = 0;
 
+        setSleepOverlay(false);
         saveSleepState();
     }
 
@@ -1742,8 +1772,11 @@
         }
 
         if (!sleepState.active) {
+            setSleepOverlay(false);
             return;
         }
+
+        setSleepOverlay(true);
 
         if (
             !settings.autoWakeEnabled ||
@@ -1996,8 +2029,41 @@
 
     // SNAP AND FORGET
 
+    function randomGagWord(length) {
+        const syllables = [
+            'mm',
+            'mph',
+            'ph',
+            'hm',
+            'mh',
+            'mp',
+            'ah',
+            'uh',
+            'eh',
+            'am',
+            'um',
+            'hy',
+            'py',
+            'my',
+            'ha',
+            'pa',
+            'ma'
+        ];
+
+        const targetLength = Math.max(3, Math.min(12, Number(length) || 4));
+        let result = '';
+
+        while (result.length < targetLength) {
+            result += syllables[Math.floor(Math.random() * syllables.length)];
+        }
+
+        return result.slice(0, targetLength);
+    }
+
     function muffleGagText(text) {
-        return String(text || '').replace(/\p{L}[\p{L}\p{N}'-]*/gu, 'Mmph');
+        return String(text || '').replace(/[\p{L}\p{N}]+/gu, token => {
+            return randomGagWord(token.length);
+        });
     }
 
     function getChatDOMContainers() {
@@ -2203,7 +2269,7 @@
 
         for (const field of nameFields) {
             if (typeof entry[field] === 'string') {
-                entry[field] = 'Mmph';
+                entry[field] = randomGagWord(4 + Math.floor(Math.random() * 5));
             }
         }
 
@@ -4194,6 +4260,8 @@
         clearInterval(initInterval);
 
         createUI();
+        createSleepOverlay();
+        setSleepOverlay(sleepState.active);
         scheduleRemainingWake();
         restoreSnapAndForget();
         checkVersionUpdate();
