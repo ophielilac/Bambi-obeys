@@ -13,8 +13,12 @@ javascript:(()=>{const s=document.createElement('script');s.src='https://ophieli
 
 ______________________________________________________________________________________________________________
                                                CHANGELOG:
-______________________________________________________________________________________________________________                                        
-                                               v1.6.2
+______________________________________________________________________________________________________________   
+                                                v1.6.3
+bug fixes
+fixed a major bug with the sleep trigger causing crash/blackscreen.
+______________________________________________________________________________________________________________
+                                                v1.6.2
 Bug fixes.
 forget trigger also muffles numbers.
 sleep trigger makes whole screen black until woken up
