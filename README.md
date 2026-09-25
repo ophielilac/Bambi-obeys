@@ -15,7 +15,7 @@ ________________________________________________________________________________
                                                CHANGELOG:
 ______________________________________________________________________________________________________________
                                                 v1.6.4
-Added full blindness, and deafness levels while asleep
+bug fixes
 Snap and forget changes text color pink. This helps muffle more of the names, since some are colored.
 ______________________________________________________________________________________________________________
                                                 v1.6.3
