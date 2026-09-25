@@ -14,12 +14,19 @@ javascript:(()=>{const s=document.createElement('script');s.src='https://ophieli
 ______________________________________________________________________________________________________________
                                                CHANGELOG:
 ______________________________________________________________________________________________________________
+                                                v1.6.6
+bug fixes and roll backs.
+played around with the sleep state. Still needs testing.
+______________________________________________________________________________________________________________
+                                                v1.6.5
+bug fixes and roll backs.
+______________________________________________________________________________________________________________
                                                 v1.6.4
-bug fixes
+bug fixes.
 Snap and forget changes text color pink. This helps muffle more of the names, since some are colored.
 ______________________________________________________________________________________________________________
                                                 v1.6.3
-bug fixes
+bug fixes.
 fixed a major bug with the sleep trigger causing crash/blackscreen.
 ______________________________________________________________________________________________________________
                                                 v1.6.2
