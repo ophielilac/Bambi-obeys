@@ -13,7 +13,11 @@ javascript:(()=>{const s=document.createElement('script');s.src='https://ophieli
 
 ______________________________________________________________________________________________________________
                                                CHANGELOG:
-______________________________________________________________________________________________________________   
+______________________________________________________________________________________________________________
+                                                v1.6.4
+Added full blindness, and deafness levels while asleep
+Snap and forget changes text color pink. This helps muffle more of the names, since some are colored.
+______________________________________________________________________________________________________________
                                                 v1.6.3
 bug fixes
 fixed a major bug with the sleep trigger causing crash/blackscreen.
