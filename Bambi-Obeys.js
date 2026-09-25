@@ -7,7 +7,7 @@
 
     // CONFIG
 
-    const BAMBI_VERSION = '1.6.3';
+    const BAMBI_VERSION = '1.6.4';
     const PRODUCT_NAME = 'Bambi Obeys';
 
     const BASE_URL =
@@ -2135,6 +2135,12 @@
         const tag = String(node.tagName || '').toLowerCase();
         if (tag === 'script' || tag === 'style') return;
 
+        // Snap and Forget keeps the forgotten chat visibly pink so it is
+        // clearly separated from anything said after the trigger.
+        try {
+            node.style.color = '#ff69b4';
+        } catch {}
+
         for (const child of [...node.childNodes]) {
             muffleDOMTree(child);
         }
@@ -2244,6 +2250,15 @@
                 entry[field] = muffleGagText(entry[field]);
             }
         }
+
+        // Keep the chat entry pink when Bondage Club exposes a style field.
+        try {
+            if (typeof entry.Style === 'object' && entry.Style) {
+                entry.Style.Color = '#ff69b4';
+            } else if (typeof entry.style === 'object' && entry.style) {
+                entry.style.color = '#ff69b4';
+            }
+        } catch {}
     }
 
     function muffleHistoricalChatData() {
@@ -2721,22 +2736,15 @@
             }
         );
 
-        // This is the important part of LSCG's sleep vision behavior.
-        // Bondage Club uses the blind level to hide the room view and
-        // sensory-dependent chat while still keeping the sleeper visible.
+        // LSCG uses the blind level to hide the room view while still
+        // keeping the sleeping character visible. Bambi uses the same
+        // mechanism, but always uses the highest sleep blindness level.
         hook(
             'Player.GetBlindLevel',
             1,
             (args, next) => {
                 if (sleepState.active) {
-                    try {
-                        return Player.GameplaySettings?.SensDepChatLog ===
-                            'SensDepLight'
-                            ? 2
-                            : 3;
-                    } catch {
-                        return 3;
-                    }
+                    return 3;
                 }
 
                 return next(args);
