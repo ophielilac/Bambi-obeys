@@ -7,7 +7,7 @@
 
     // CONFIG
 
-    const BAMBI_VERSION = '1.6.4';
+    const BAMBI_VERSION = '1.6.5';
     const PRODUCT_NAME = 'Bambi Obeys';
 
     const BASE_URL =
@@ -235,6 +235,8 @@
     };
     const forgottenChatObjects = new WeakSet();
     const forgottenChatSignatures = new Set();
+    let sleepMuffledChatObjects = new WeakSet();
+    const sleepPreexistingChatSignatures = new Set();
     let chatForgetObserver = null;
 
 
@@ -1712,9 +1714,11 @@
         sleepState.active = true;
         sleepState.startedAt = now();
 
+        captureSleepChatBaseline();
         saveSleepState();
 
         sleepCharacterIndefinitely();
+        refreshChatForgetObserver();
         scheduleRemainingWake();
     }
 
@@ -1728,6 +1732,8 @@
 
         sleepState.active = false;
         sleepState.startedAt = 0;
+        sleepPreexistingChatSignatures.clear();
+        refreshChatForgetObserver();
 
         saveSleepState();
     }
@@ -2101,7 +2107,7 @@
                     const signature = getNodeSignature(child);
                     if (signature) forgottenChatSignatures.add(signature);
                     forgottenChatObjects.add(child);
-                    muffleDOMTree(child);
+                    muffleChatDOMNode(child);
                 }
             }
         }
@@ -2135,15 +2141,129 @@
         const tag = String(node.tagName || '').toLowerCase();
         if (tag === 'script' || tag === 'style') return;
 
-        // Snap and Forget keeps the forgotten chat visibly pink so it is
-        // clearly separated from anything said after the trigger.
-        try {
-            node.style.color = '#ff69b4';
-        } catch {}
-
         for (const child of [...node.childNodes]) {
             muffleDOMTree(child);
         }
+    }
+
+    function getChatMessageNodes() {
+        const found = [];
+        const seen = new Set();
+
+        for (const containerElement of getChatDOMContainers()) {
+            try {
+                if (
+                    containerElement.matches &&
+                    containerElement.matches('.ChatMessage.ChatMessageChat')
+                ) {
+                    seen.add(containerElement);
+                    found.push(containerElement);
+                }
+
+                for (const node of containerElement.querySelectorAll('.ChatMessage.ChatMessageChat')) {
+                    if (seen.has(node)) continue;
+                    seen.add(node);
+                    found.push(node);
+                }
+            } catch {}
+        }
+
+        return found;
+    }
+
+    function pinkChatName(node) {
+        if (!node || node.nodeType !== 1) return;
+
+        const roots = [];
+
+        try {
+            if (node.matches?.('.ChatMessage.ChatMessageChat')) {
+                roots.push(node);
+            }
+
+            roots.push(
+                ...node.querySelectorAll?.('.ChatMessage.ChatMessageChat') || []
+            );
+        } catch {}
+
+        if (roots.length === 0) roots.push(node);
+
+        for (const root of roots) {
+            const elements = [];
+
+            try {
+                elements.push(root);
+                elements.push(...root.querySelectorAll('*'));
+            } catch {}
+
+            elements.sort((a, b) => {
+                return String(a.textContent || '').length -
+                    String(b.textContent || '').length;
+            });
+
+            let colored = false;
+
+            for (const element of elements) {
+                const text = String(element.textContent || '').trim();
+                if (!text) continue;
+
+                if (/^[\p{L}\p{N}\s'’._-]+\s*:\s*$/u.test(text)) {
+                    try {
+                        element.style.color = '#ff69b4';
+                        colored = true;
+                        break;
+                    } catch {}
+                }
+            }
+
+            if (colored) continue;
+
+            try {
+                const walker = document.createTreeWalker(
+                    root,
+                    NodeFilter.SHOW_TEXT
+                );
+
+                const textNodes = [];
+                let current = walker.nextNode();
+                while (current) {
+                    textNodes.push(current);
+                    current = walker.nextNode();
+                }
+
+                for (const textNode of textNodes) {
+                    const value = String(textNode.nodeValue || '');
+                    const colonIndex = value.indexOf(':');
+                    if (colonIndex <= 0) continue;
+
+                    const prefix = value.slice(0, colonIndex);
+                    if (!/[\p{L}\p{N}]/u.test(prefix)) continue;
+
+                    const parent = textNode.parentNode;
+                    if (!parent || parent.nodeType !== 1) continue;
+
+                    const fragment = document.createDocumentFragment();
+                    const nameSpan = document.createElement('span');
+                    nameSpan.textContent = prefix;
+                    nameSpan.style.color = '#ff69b4';
+                    fragment.appendChild(nameSpan);
+                    fragment.appendChild(
+                        document.createTextNode(value.slice(colonIndex))
+                    );
+
+                    parent.replaceChild(fragment, textNode);
+                    colored = true;
+                    break;
+                }
+            } catch {}
+        }
+    }
+
+    function muffleChatDOMNode(node) {
+        if (!node) return;
+
+        muffleDOMTree(node);
+        pinkChatName(node);
     }
 
     function muffleExistingChatDOM() {
@@ -2152,7 +2272,7 @@
                 const signature = getNodeSignature(child);
                 if (signature) forgottenChatSignatures.add(signature);
                 forgottenChatObjects.add(child);
-                muffleDOMTree(child);
+                muffleChatDOMNode(child);
             }
         }
     }
@@ -2251,14 +2371,6 @@
             }
         }
 
-        // Keep the chat entry pink when Bondage Club exposes a style field.
-        try {
-            if (typeof entry.Style === 'object' && entry.Style) {
-                entry.Style.Color = '#ff69b4';
-            } else if (typeof entry.style === 'object' && entry.style) {
-                entry.style.color = '#ff69b4';
-            }
-        } catch {}
     }
 
     function muffleHistoricalChatData() {
@@ -2282,16 +2394,62 @@
         if (containers.length === 0) return;
 
         chatForgetObserver = new MutationObserver(mutations => {
-            if (!chatForgetState.active) return;
-
             for (const mutation of mutations) {
                 for (const node of mutation.addedNodes) {
                     if (!node || node.nodeType !== 1) continue;
 
-                    const signature = getNodeSignature(node);
-                    if (signature && forgottenChatSignatures.has(signature)) {
-                        forgottenChatObjects.add(node);
-                        muffleDOMTree(node);
+                    if (chatForgetState.active) {
+                        const signature = getNodeSignature(node);
+                        if (signature && forgottenChatSignatures.has(signature)) {
+                            forgottenChatObjects.add(node);
+                            muffleChatDOMNode(node);
+                        }
+
+                        if (node.matches?.('.ChatMessage.ChatMessageChat')) {
+                            const timestamp = getDOMNodeTime(node);
+                            if (timestamp !== null && timestamp <= chatForgetState.cutoff) {
+                                const historicalSignature = getNodeSignature(node);
+                                if (historicalSignature) {
+                                    forgottenChatSignatures.add(historicalSignature);
+                                }
+                                forgottenChatObjects.add(node);
+                                muffleChatDOMNode(node);
+                            }
+                        }
+                    }
+
+                    if (sleepState.active) {
+                        const timestamp = getDOMNodeTime(node);
+                        const signature = getNodeSignature(node);
+
+                        if (
+                            !sleepPreexistingChatSignatures.has(signature) ||
+                            (timestamp !== null && timestamp >= sleepState.startedAt)
+                        ) {
+                            muffleSleepChatNode(node);
+                        }
+                    }
+
+                    for (const child of node.querySelectorAll?.('.ChatMessage.ChatMessageChat') || []) {
+                        if (chatForgetState.active) {
+                            const signature = getNodeSignature(child);
+                            if (signature && forgottenChatSignatures.has(signature)) {
+                                forgottenChatObjects.add(child);
+                                muffleChatDOMNode(child);
+                            }
+                        }
+
+                        if (sleepState.active) {
+                            const timestamp = getDOMNodeTime(child);
+                            const signature = getNodeSignature(child);
+
+                            if (
+                                !sleepPreexistingChatSignatures.has(signature) ||
+                                (timestamp !== null && timestamp >= sleepState.startedAt)
+                            ) {
+                                muffleSleepChatNode(child);
+                            }
+                        }
                     }
                 }
             }
@@ -2307,6 +2465,68 @@
         }
     }
 
+    function refreshChatForgetObserver() {
+        if (chatForgetState.active || sleepState.active) {
+            installChatForgetObserver();
+            return;
+        }
+
+        if (chatForgetObserver) {
+            try {
+                chatForgetObserver.disconnect();
+            } catch {}
+            chatForgetObserver = null;
+        }
+    }
+
+    function captureSleepChatBaseline() {
+        sleepMuffledChatObjects = new WeakSet();
+        sleepPreexistingChatSignatures.clear();
+
+        for (const node of getChatMessageNodes()) {
+            const signature = getNodeSignature(node);
+            if (signature) sleepPreexistingChatSignatures.add(signature);
+        }
+    }
+
+    function muffleSleepChatNode(node) {
+        if (!node || node.nodeType !== 1) return;
+
+        const chatNodes = [];
+
+        try {
+            if (node.matches?.('.ChatMessage.ChatMessageChat')) {
+                chatNodes.push(node);
+            }
+
+            chatNodes.push(
+                ...node.querySelectorAll?.('.ChatMessage.ChatMessageChat') || []
+            );
+        } catch {}
+
+        if (chatNodes.length === 0) return;
+
+        for (const chatNode of chatNodes) {
+            if (sleepMuffledChatObjects.has(chatNode)) continue;
+
+            sleepMuffledChatObjects.add(chatNode);
+            muffleChatDOMNode(chatNode);
+        }
+    }
+
+    function muffleNewSleepChatMessages(beforeNodes) {
+        if (!sleepState.active) return;
+
+        const before = beforeNodes instanceof Set
+            ? beforeNodes
+            : new Set();
+
+        for (const node of getChatMessageNodes()) {
+            if (before.has(node)) continue;
+            muffleSleepChatNode(node);
+        }
+    }
+
     function activateSnapAndForget() {
         chatForgetState.active = true;
         chatForgetState.cutoff = now();
@@ -2314,7 +2534,7 @@
 
         muffleExistingChatDOM();
         muffleHistoricalChatData();
-        installChatForgetObserver();
+        refreshChatForgetObserver();
     }
 
     function restoreSnapAndForget() {
@@ -2324,7 +2544,7 @@
         // so messages that happened after Snap and Forget stay clear.
         muffleHistoricalChatData();
         muffleHistoricalChatDOM();
-        installChatForgetObserver();
+        refreshChatForgetObserver();
     }
 
 
@@ -2507,10 +2727,14 @@
 
     function installChatForgetHook() {
         // ChatRoomMessage is already hooked below. This helper only ensures
-        // historical data is re-muffled if Bondage Club redraws its log.
-        if (!chatForgetState.active) return;
-        muffleHistoricalChatData();
-        installChatForgetObserver();
+        // historical chat is re-muffled and sleep chat stays muffled if
+        // Bondage Club redraws its log.
+        if (chatForgetState.active) {
+            muffleHistoricalChatData();
+            muffleHistoricalChatDOM();
+        }
+
+        refreshChatForgetObserver();
     }
 
     function installChatRoomSyncHook() {
@@ -2559,18 +2783,32 @@
                 1,
                 (args, next) => {
                     const data = args[0];
+                    const sleepChatBefore =
+                        sleepState.active && data?.Type === 'Chat'
+                            ? new Set(getChatMessageNodes())
+                            : null;
 
                     try {
                         handleBambiMessage(data);
 
-                        // Snap and forget only affects messages that existed at
-                        // the moment the trigger fired. New chat is left alone.
                         installChatForgetHook();
                     } catch (error) {
                         console.error('Bambi Obeys: message handling failed', error);
                     }
 
-                    return next(args);
+                    const result = next(args);
+
+                    if (sleepChatBefore) {
+                        setTimeout(() => {
+                            muffleNewSleepChatMessages(sleepChatBefore);
+                        }, 25);
+
+                        setTimeout(() => {
+                            muffleNewSleepChatMessages(sleepChatBefore);
+                        }, 100);
+                    }
+
+                    return result;
                 }
             );
 
@@ -2718,33 +2956,6 @@
             (args, next) => {
                 if (sleepState.active) {
                     return false;
-                }
-
-                return next(args);
-            }
-        );
-
-        hook(
-            'Player.GetDeafLevel',
-            1,
-            (args, next) => {
-                if (sleepState.active) {
-                    return 4;
-                }
-
-                return next(args);
-            }
-        );
-
-        // LSCG uses the blind level to hide the room view while still
-        // keeping the sleeping character visible. Bambi uses the same
-        // mechanism, but always uses the highest sleep blindness level.
-        hook(
-            'Player.GetBlindLevel',
-            1,
-            (args, next) => {
-                if (sleepState.active) {
-                    return 3;
                 }
 
                 return next(args);
@@ -4294,6 +4505,9 @@
         clearInterval(initInterval);
 
         createUI();
+        if (sleepState.active) {
+            captureSleepChatBaseline();
+        }
         scheduleRemainingWake();
         restoreSnapAndForget();
         checkVersionUpdate();
