@@ -1,31 +1,13 @@
 (function () {
     'use strict';
 
-    // LSCG-style deployment: this tiny loader always pulls the
-    // newest hosted Bambi Obeys core on every page load.
-    if (window.__BAMBI_OBEYS_LOADER_RAN__) return;
-    window.__BAMBI_OBEYS_LOADER_RAN__ = true;
-
-    const script = document.createElement('script');
-    script.language = 'JavaScript';
-    script.setAttribute('crossorigin', 'anonymous');
-    script.src = `https://ophielilac.github.io/Bambi-obeys/Bambi-Obeys.js?${Date.now()}`;
-    document.head.appendChild(script);
-})();
-
-
-===== Bambi-Obeys.js =====
-
-(function () {
-    'use strict';
-
     if (window.__BAMBI_OBEYS_CORE_LOADED__) return;
     window.__BAMBI_OBEYS_CORE_LOADED__ = true;
 
 
     // CONFIG
 
-    const BAMBI_VERSION = '1.6.6';
+    const BAMBI_VERSION = '1.6.7';
     const PRODUCT_NAME = 'Bambi Obeys';
 
     const BASE_URL =
@@ -4325,49 +4307,66 @@
             return;
         }
 
+        // Core UI should not be blocked by an optional hook failing to install.
+        // The sleep, drawing, sync, and AccountBeep hooks continue retrying until
+        // Bondage Club exposes the functions they need.
         installBambiMessageHook();
         installChatRoomSyncHook();
         installBambiLabelHook();
         installBambiAccountBeepHook();
         installBambiSleepHooks();
 
-        if (!bambiMessageHookInstalled || !bambiDrawHookInstalled || !bambiSleepHooksInstalled || !window.__BAMBI_OBEYS_SYNC_HOOK_INSTALLED__ || !window.__BAMBI_OBEYS_ACCOUNT_BEEP_HOOK_INSTALLED__) {
+        if (!bambiMessageHookInstalled) {
             if (initAttempts > 1200) clearInterval(initInterval);
             return;
         }
 
-        clearInterval(initInterval);
+        if (!container) {
+            createUI();
+            scheduleRemainingWake();
+            restoreSnapAndForget();
+            checkVersionUpdate();
 
-        createUI();
-        scheduleRemainingWake();
-        restoreSnapAndForget();
-        checkVersionUpdate();
+            setTimeout(() => {
+                checkForNewVersion();
+            }, 1500);
 
-        setTimeout(() => {
-            checkForNewVersion();
-        }, 1500);
+            setInterval(() => {
+                checkForNewVersion();
+            }, 5 * 60 * 1000);
 
-        setInterval(() => {
-            checkForNewVersion();
-        }, 5 * 60 * 1000);
+            setTimeout(refreshRoomData, 1000);
+            setInterval(refreshRoomData, 5000);
 
-        setTimeout(refreshRoomData, 1000);
-        setInterval(refreshRoomData, 5000);
+            setInterval(() => {
+                const cutoff = now() - 15000;
 
-        setInterval(() => {
-            const cutoff = now() - 15000;
-
-            for (const [memberNumber, presence] of bambiPresence) {
-                if (Number(presence.lastSeen) < cutoff) {
-                    bambiPresence.delete(memberNumber);
+                for (const [memberNumber, presence] of bambiPresence) {
+                    if (Number(presence.lastSeen) < cutoff) {
+                        bambiPresence.delete(memberNumber);
+                    }
                 }
-            }
-        }, 5000);
+            }, 5000);
 
-        announcePresence();
+            announcePresence();
 
-        console.log(
-            `${PRODUCT_NAME} v${BAMBI_VERSION} loaded.`
-        );
+            console.log(
+                `${PRODUCT_NAME} v${BAMBI_VERSION} loaded.`
+            );
+        }
+
+        // Keep retrying the optional hooks after the UI is available. This
+        // prevents one unavailable BC function from stopping Bambi entirely.
+        if (
+            bambiMessageHookInstalled &&
+            bambiDrawHookInstalled &&
+            bambiSleepHooksInstalled &&
+            window.__BAMBI_OBEYS_SYNC_HOOK_INSTALLED__ &&
+            window.__BAMBI_OBEYS_ACCOUNT_BEEP_HOOK_INSTALLED__
+        ) {
+            clearInterval(initInterval);
+        } else if (initAttempts > 1200) {
+            clearInterval(initInterval);
+        }
     }, 100);
 })();
