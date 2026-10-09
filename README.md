@@ -4,11 +4,13 @@ TamperMonkey/ViolentMonkey Instalation: [https://raw.githubusercontent.com/ophie
 
 Bookmark download:
 1. Copy this code without the quotes:
-  "
+
+
 javascript:(()=>{const s=document.createElement('script');s.src='https://ophielilac.github.io/Bambi-obeys/Bambi-Obeys.js?'+Date.now();document.head.appendChild(s)})()
-  "
-2. Create a new bookmark, and paste that code as the url.
-3. Once loaded into the club, simply click the bookmark. And boom! It's running!
+
+
+3. Create a new bookmark, and paste that code as the url.
+4. Once loaded into the club, simply click the bookmark. And boom! It's running!
 
 
 ______________________________________________________________________________________________________________
