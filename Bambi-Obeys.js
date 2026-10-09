@@ -7,7 +7,7 @@
 
     // CONFIG
 
-    const BAMBI_VERSION = '1.6.8';
+    const BAMBI_VERSION = '1.6.9';
     const PRODUCT_NAME = 'Bambi Obeys';
 
     const BASE_URL =
@@ -237,11 +237,6 @@
     const forgottenChatSignatures = new Set();
     let chatForgetObserver = null;
 
-    let sleepChatStyleGuardObserver = null;
-    let sleepChatStyleGuardActive = false;
-    const sleepChatStyleBaselines = new Map();
-    const sleepChatTouchedNodes = new Set();
-    const sleepChatSenderColors = new Map();
 
 
     // HELPERS
@@ -1762,7 +1757,6 @@
             setBambiSleepExpression();
             fallDownIfPossible();
             addBambiForceKneel();
-            startSleepChatStyleGuard();
             scheduleRemainingWake();
             return;
         }
@@ -1773,7 +1767,6 @@
         saveSleepState();
 
         sleepCharacterIndefinitely();
-        startSleepChatStyleGuard();
         refreshChatForgetObserver();
         scheduleRemainingWake();
     }
@@ -1788,7 +1781,6 @@
 
         sleepState.active = false;
         sleepState.startedAt = 0;
-        stopSleepChatStyleGuard();
         saveSleepState();
     }
 
@@ -2438,240 +2430,6 @@
         muffleHistoricalChatData();
         muffleHistoricalChatDOM();
         refreshChatForgetObserver();
-    }
-
-
-    // SLEEP CHAT STYLE PRESERVATION
-
-    function getSleepChatMessageNodes() {
-        const found = [];
-        const seen = new Set();
-
-        for (const containerElement of getChatDOMContainers()) {
-            try {
-                if (
-                    containerElement.matches?.('.ChatMessage.ChatMessageChat') &&
-                    !seen.has(containerElement)
-                ) {
-                    seen.add(containerElement);
-                    found.push(containerElement);
-                }
-
-                for (const node of containerElement.querySelectorAll?.('.ChatMessage.ChatMessageChat') || []) {
-                    if (seen.has(node)) continue;
-                    seen.add(node);
-                    found.push(node);
-                }
-            } catch {}
-        }
-
-        return found;
-    }
-
-    function getChatNodeMemberNumber(node) {
-        if (!node) return 0;
-
-        const values = [
-            node.getAttribute?.('data-membernumber'),
-            node.getAttribute?.('data-member-number'),
-            node.getAttribute?.('data-member'),
-            node.dataset?.membernumber,
-            node.dataset?.memberNumber
-        ];
-
-        for (const value of values) {
-            const member = normalizeMemberNumber(value);
-            if (member) return member;
-        }
-
-        return 0;
-    }
-
-    function getComputedChatColor(node) {
-        try {
-            if (node && typeof getComputedStyle === 'function') {
-                return getComputedStyle(node).color || '';
-            }
-        } catch {}
-
-        return '';
-    }
-
-    function captureSleepChatStyleBaseline() {
-        sleepChatStyleBaselines.clear();
-        sleepChatTouchedNodes.clear();
-        sleepChatSenderColors.clear();
-
-        for (const containerElement of getChatDOMContainers()) {
-            sleepChatStyleBaselines.set(
-                containerElement,
-                {
-                    cssText: containerElement.style?.cssText || '',
-                    color: getComputedChatColor(containerElement)
-                }
-            );
-        }
-
-        for (const node of getSleepChatMessageNodes()) {
-            const color = getComputedChatColor(node);
-            const memberNumber = getChatNodeMemberNumber(node);
-
-            sleepChatStyleBaselines.set(
-                node,
-                {
-                    cssText: node.style?.cssText || '',
-                    color
-                }
-            );
-
-            if (memberNumber && color) {
-                sleepChatSenderColors.set(memberNumber, color);
-            }
-        }
-    }
-
-    function preserveSleepChatNodeStyle(node) {
-        if (!node || node.nodeType !== 1) return;
-
-        const baseline = sleepChatStyleBaselines.get(node);
-        if (baseline) {
-            const currentColor = getComputedChatColor(node);
-
-            if (
-                baseline.color &&
-                currentColor === 'rgb(255, 255, 255)' &&
-                baseline.color !== 'rgb(255, 255, 255)'
-            ) {
-                try {
-                    node.style.color = baseline.color;
-                    sleepChatTouchedNodes.add(node);
-                } catch {}
-            }
-
-            return;
-        }
-
-        const memberNumber = getChatNodeMemberNumber(node);
-        const knownColor = memberNumber
-            ? sleepChatSenderColors.get(memberNumber)
-            : '';
-        const currentColor = getComputedChatColor(node);
-
-        if (knownColor) {
-            try {
-                node.style.color = knownColor;
-                sleepChatTouchedNodes.add(node);
-            } catch {}
-        } else {
-            sleepChatStyleBaselines.set(
-                node,
-                {
-                    cssText: node.style?.cssText || '',
-                    color: currentColor
-                }
-            );
-        }
-    }
-
-    function preserveSleepChatStyles() {
-        if (!sleepChatStyleGuardActive) return;
-
-        for (const [node, baseline] of sleepChatStyleBaselines) {
-            if (!node?.isConnected) continue;
-
-            const currentColor = getComputedChatColor(node);
-            if (
-                baseline.color &&
-                currentColor === 'rgb(255, 255, 255)' &&
-                baseline.color !== 'rgb(255, 255, 255)'
-            ) {
-                try {
-                    node.style.color = baseline.color;
-                    sleepChatTouchedNodes.add(node);
-                } catch {}
-            }
-        }
-
-        for (const node of getSleepChatMessageNodes()) {
-            preserveSleepChatNodeStyle(node);
-        }
-    }
-
-    function installSleepChatStyleGuard() {
-        if (sleepChatStyleGuardObserver || typeof MutationObserver === 'undefined') {
-            return;
-        }
-
-        const containers = getChatDOMContainers();
-        if (containers.length === 0) return;
-
-        sleepChatStyleGuardObserver = new MutationObserver(mutations => {
-            if (!sleepState.active || !sleepChatStyleGuardActive) return;
-
-            for (const mutation of mutations) {
-                if (mutation.type === 'attributes' && mutation.target) {
-                    preserveSleepChatNodeStyle(mutation.target);
-                    continue;
-                }
-
-                for (const node of mutation.addedNodes) {
-                    if (node?.nodeType !== 1) continue;
-
-                    preserveSleepChatNodeStyle(node);
-
-                    for (const child of node.querySelectorAll?.('.ChatMessage.ChatMessageChat') || []) {
-                        preserveSleepChatNodeStyle(child);
-                    }
-                }
-            }
-        });
-
-        for (const containerElement of containers) {
-            try {
-                sleepChatStyleGuardObserver.observe(containerElement, {
-                    childList: true,
-                    subtree: true,
-                    attributes: true,
-                    attributeFilter: ['style', 'class']
-                });
-            } catch {}
-        }
-    }
-
-    function startSleepChatStyleGuard() {
-        if (sleepChatStyleGuardActive) {
-            installSleepChatStyleGuard();
-            preserveSleepChatStyles();
-            return;
-        }
-
-        sleepChatStyleGuardActive = true;
-        captureSleepChatStyleBaseline();
-        installSleepChatStyleGuard();
-        preserveSleepChatStyles();
-    }
-
-    function stopSleepChatStyleGuard() {
-        sleepChatStyleGuardActive = false;
-
-        if (sleepChatStyleGuardObserver) {
-            try {
-                sleepChatStyleGuardObserver.disconnect();
-            } catch {}
-            sleepChatStyleGuardObserver = null;
-        }
-
-        for (const [node, baseline] of sleepChatStyleBaselines) {
-            if (!node?.isConnected) continue;
-
-            try {
-                node.style.cssText = baseline.cssText;
-            } catch {}
-        }
-
-        sleepChatStyleBaselines.clear();
-        sleepChatTouchedNodes.clear();
-        sleepChatSenderColors.clear();
     }
 
 
@@ -4577,9 +4335,6 @@
         refreshAllUI();
         installChatForgetHook();
 
-        if (sleepState.active) {
-            startSleepChatStyleGuard();
-        }
     }
 
 
@@ -4622,9 +4377,6 @@
         if (!container) {
             createUI();
             scheduleRemainingWake();
-            if (sleepState.active) {
-                startSleepChatStyleGuard();
-            }
             restoreSnapAndForget();
             checkVersionUpdate();
 
