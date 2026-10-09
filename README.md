@@ -1,4 +1,4 @@
-
+Started as a fun project I was palying around with, but it kept growing and growing into what it is today! I always felt that text triggers were a little disapointing, but now Bambi's are able to explore their favorite triggers as audio! Currently only have two people working on it, So be pataint if something is broken. We're trying our hardest to keep the project fun and new, but irl sometimes gets in the way... So new additions and updates won't always be consistant. But I can promise it'll stay functional!
 
 TamperMonkey/ViolentMonkey Instalation: [https://raw.githubusercontent.com/ophielilac/Bambi-obeys/main/Bambi-Obeys.user.js](https://raw.githubusercontent.com/ophielilac/Bambi-obeys/main/Bambi-Obeys.user.js)
 
