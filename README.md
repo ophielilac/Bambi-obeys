@@ -3,10 +3,10 @@ Started as a fun project I was palying around with, but it kept growing and grow
 TamperMonkey/ViolentMonkey Instalation: [https://raw.githubusercontent.com/ophielilac/Bambi-obeys/main/Bambi-Obeys.user.js](https://raw.githubusercontent.com/ophielilac/Bambi-obeys/main/Bambi-Obeys.user.js)
 
 Bookmark download:
-1. Copy this code:
-
+1. Copy this code without the quotes:
+"
 javascript:(()=>{const s=document.createElement('script');s.src='https://ophielilac.github.io/Bambi-obeys/Bambi-Obeys.js?'+Date.now();document.head.appendChild(s)})()
-
+"
 2. Create a new bookmark, and paste that code as the url.
 3. Once loaded into the club, simply click the bookmark. And boom! It's running!
 
