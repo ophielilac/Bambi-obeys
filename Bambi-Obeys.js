@@ -7,7 +7,7 @@
 
     // CONFIG
 
-    const BAMBI_VERSION = '1.6.9';
+    const BAMBI_VERSION = '1.7.0';
     const PRODUCT_NAME = 'Bambi Obeys';
 
     const BASE_URL =
@@ -39,6 +39,12 @@
 
     const CHAT_FORGET_KEY =
         'bambiObeysChatForget_v1';
+
+    const CUSTOM_COMBOS_KEY =
+        'bambiObeysCustomCombos_v1';
+
+    const CUSTOM_SHARES_KEY =
+        'bambiObeysPendingComboShares_v1';
 
     const PROTOCOL =
         'BambiObeysMsg';
@@ -144,6 +150,9 @@
         }
     ];
 
+    // Keep built-in audio triggers separate from user-created combo entries.
+    const BUILTIN_TRIGGER_COUNT = TRIGGERS.length;
+
     const DEFAULT_SETTINGS = {
         // Authority
         authorityMode: 'owner',
@@ -200,9 +209,20 @@
     let authorityRoleStatus = null;
     let whitelistInput = null;
     let whitelistLabelElement = null;
+    let customLimitsContainer = null;
+    let customShareComboSelect = null;
+    let customShareTargetSelect = null;
+    let customShareTargetMemberInput = null;
+    let customSharePendingContainer = null;
+    let customSavedListRefresh = null;
 
     const bambiPresence = new Map();
     const pendingTriggerRequests = new Map();
+
+    let customCombos = [];
+    let pendingComboShares = [];
+    const pendingComboShareSends = new Map();
+    const comboRuns = new Map();
 
     let bambiMod = null;
     let bambiMessageHookInstalled = false;
@@ -713,8 +733,151 @@
         mergeSettings(DEFAULT_SETTINGS);
     }
 
+    function createComboId() {
+        return `combo-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    }
+
+    function clampNumber(value, min, max, fallback = min) {
+        const number = Number(value);
+        if (!Number.isFinite(number)) return fallback;
+        return Math.max(min, Math.min(max, number));
+    }
+
+    function normalizeComboDefinition(value, options = {}) {
+        if (!value || typeof value !== 'object' || !Array.isArray(value.steps)) {
+            return null;
+        }
+
+        const steps = value.steps
+            .slice(0, 32)
+            .map(step => {
+                const triggerIndex = Number(step?.triggerIndex);
+                if (
+                    !Number.isInteger(triggerIndex) ||
+                    triggerIndex < 0 ||
+                    triggerIndex >= BUILTIN_TRIGGER_COUNT
+                ) {
+                    return null;
+                }
+
+                return {
+                    triggerIndex,
+                    pan: clampNumber(step.pan, -1, 1, 0),
+                    volume: clampNumber(step.volume, 0, 1, 1),
+                    delayMs: Math.round(clampNumber(step.delayMs, 0, 600000, 0)),
+                    crossfadeMs: Math.round(clampNumber(step.crossfadeMs, 0, 10000, 0)),
+                    waitForEnd: Boolean(step.waitForEnd)
+                };
+            })
+            .filter(Boolean);
+
+        if (!steps.length) return null;
+
+        const id = String(value.id || (options.createId ? createComboId() : ''))
+            .replace(/[^a-zA-Z0-9_-]/g, '')
+            .slice(0, 100);
+        if (!id && !options.createId) return null;
+
+        const name = String(value.name || '').trim().slice(0, 60);
+        if (!name && !options.allowEmptyName) return null;
+
+        return {
+            id: id || createComboId(),
+            name,
+            loop: Boolean(value.loop),
+            steps
+        };
+    }
+
+    function syncCustomTriggerEntries() {
+        TRIGGERS.splice(BUILTIN_TRIGGER_COUNT);
+
+        for (const combo of customCombos) {
+            TRIGGERS.push({
+                name: combo.name,
+                description: `Custom combo · ${combo.steps.length} set${combo.steps.length === 1 ? '' : 's'}${combo.loop ? ' · loops until stopped' : ''}.`,
+                isCustomCombo: true,
+                comboId: combo.id,
+                combo
+            });
+
+            if (combo.loop) {
+                TRIGGERS.push({
+                    name: `${combo.name} stop`,
+                    description: `Stops the looping custom combo "${combo.name}".`,
+                    isCustomLoopStop: true,
+                    comboId: combo.id,
+                    comboName: combo.name
+                });
+            }
+        }
+    }
+
+    function loadCustomCombos() {
+        try {
+            const saved = JSON.parse(localStorage.getItem(CUSTOM_COMBOS_KEY) || '[]');
+            customCombos = Array.isArray(saved)
+                ? saved
+                    .map(combo => normalizeComboDefinition(combo))
+                    .filter(combo => combo && combo.name)
+                : [];
+        } catch (error) {
+            customCombos = [];
+            console.error('Bambi Obeys: custom combos load failed', error);
+        }
+
+        syncCustomTriggerEntries();
+    }
+
+    function saveCustomCombos() {
+        try {
+            localStorage.setItem(CUSTOM_COMBOS_KEY, JSON.stringify(customCombos));
+        } catch (error) {
+            console.error('Bambi Obeys: custom combos save failed', error);
+        }
+
+        syncCustomTriggerEntries();
+        refreshTriggerOptions();
+        refreshAllUI();
+    }
+
+    function loadPendingComboShares() {
+        try {
+            const saved = JSON.parse(localStorage.getItem(CUSTOM_SHARES_KEY) || '[]');
+            pendingComboShares = Array.isArray(saved)
+                ? saved.slice(0, 30).map(request => {
+                    const combo = normalizeComboDefinition(request?.combo);
+                    const senderMemberNumber = normalizeMemberNumber(request?.senderMemberNumber);
+                    const requestId = String(request?.requestId || '').slice(0, 160);
+                    if (!combo || !senderMemberNumber || !requestId) return null;
+                    return {
+                        requestId,
+                        senderMemberNumber,
+                        senderName: String(request?.senderName || 'Someone').slice(0, 80),
+                        combo,
+                        receivedAt: Number(request?.receivedAt) || Date.now()
+                    };
+                }).filter(Boolean)
+                : [];
+        } catch (error) {
+            pendingComboShares = [];
+            console.error('Bambi Obeys: pending combo shares load failed', error);
+        }
+    }
+
+    function savePendingComboShares() {
+        try {
+            localStorage.setItem(CUSTOM_SHARES_KEY, JSON.stringify(pendingComboShares));
+        } catch (error) {
+            console.error('Bambi Obeys: pending combo shares save failed', error);
+        }
+        refreshCustomShareControls();
+    }
+
     function loadStorage() {
         migrateLegacySettings();
+        loadCustomCombos();
+        loadPendingComboShares();
 
         for (const trigger of TRIGGERS) {
             if (
@@ -1121,11 +1284,11 @@
         } catch {}
     }
 
-    function trimActiveLayersIfNeeded() {
+    function trimActiveLayersIfNeeded(exemptLayer = null) {
         const limit = Math.max(1, Number(settings.maxSimultaneous) || 1);
 
         while (activeLayers.size >= limit) {
-            const oldest = activeLayers.values().next().value;
+            const oldest = [...activeLayers].find(layer => layer !== exemptLayer);
             if (!oldest) break;
             stopLayer(oldest);
             activeLayers.delete(oldest);
@@ -1136,7 +1299,7 @@
         }
     }
 
-    async function playLayer(index) {
+    async function playLayer(index, options = {}) {
         const context = ensureAudioContext();
         if (!context) return false;
 
@@ -1146,7 +1309,7 @@
             }
         } catch {}
 
-        trimActiveLayersIfNeeded();
+        trimActiveLayersIfNeeded(options.crossfadeFromLayer || null);
 
         let buffer;
         try {
@@ -1171,7 +1334,9 @@
         let pan = 0;
         let initialGain = 1;
 
-        if (!isMain) {
+        if (Object.prototype.hasOwnProperty.call(options, 'pan')) {
+            pan = clampNumber(options.pan, -1, 1, 0);
+        } else if (!isMain) {
             if (settings.alternateEars) {
                 lastSecondaryPan = lastSecondaryPan === 1 ? -1 : 1;
                 pan = lastSecondaryPan;
@@ -1185,6 +1350,10 @@
             );
         }
 
+        if (Object.prototype.hasOwnProperty.call(options, 'volume')) {
+            initialGain = clampNumber(options.volume, 0, 1, 1);
+        }
+
         panner.pan.value = pan;
         source.connect(gain);
         gain.connect(panner);
@@ -1193,24 +1362,59 @@
         const fadeIn = Math.max(0, Number(settings.fadeInMs) / 1000);
         const fadeOut = Math.max(0, Number(settings.fadeOutMs) / 1000);
         const startTime = context.currentTime;
+        const requestedCrossfadeMs = clampNumber(options.crossfadeMs, 0, 10000, 0);
+        const requestedCrossfadeSeconds = requestedCrossfadeMs / 1000;
+        const previousLayer = options.crossfadeFromLayer;
+        const previousRemainingSeconds = previousLayer && Number.isFinite(previousLayer.endsAt)
+            ? Math.max(0, previousLayer.endsAt - startTime)
+            : requestedCrossfadeSeconds;
+        const crossfadeSeconds = Math.min(requestedCrossfadeSeconds, previousRemainingSeconds);
+        const canCrossfade = Boolean(
+            crossfadeSeconds > 0 &&
+            previousLayer &&
+            activeLayers.has(previousLayer)
+        );
+        const effectiveFadeIn = canCrossfade ? crossfadeSeconds : fadeIn;
 
         gain.gain.setValueAtTime(0, startTime);
         gain.gain.linearRampToValueAtTime(
             initialGain,
-            startTime + Math.max(0.01, fadeIn)
+            startTime + Math.max(0.01, effectiveFadeIn)
         );
+
+        // When a combo step crossfades into this one, fade the previous step
+        // down over the same interval instead of abruptly cutting it off.
+        if (canCrossfade) {
+            try {
+                const previousGain = previousLayer.gain.gain;
+                previousGain.cancelScheduledValues(startTime);
+                previousGain.setValueAtTime(
+                    Math.max(0, Number(previousLayer.baseGain ?? previousGain.value) || 0),
+                    startTime
+                );
+                previousGain.linearRampToValueAtTime(0, startTime + crossfadeSeconds);
+                previousLayer.source.stop(startTime + crossfadeSeconds + 0.03);
+                previousLayer.endsAt = Math.min(previousLayer.endsAt, startTime + crossfadeSeconds + 0.03);
+            } catch (error) {
+                console.debug('Bambi Obeys: combo crossfade could not fade previous layer', error);
+            }
+        }
 
         const layer = {
             source,
             gain,
             panner,
             index,
-            isMain
+            isMain,
+            baseGain: initialGain,
+            startTime,
+            endsAt: startTime + buffer.duration,
+            comboRunKey: options.comboRunKey || null
         };
 
         activeLayers.add(layer);
 
-        if (isMain) {
+        if (isMain || (canCrossfade && mainAudioLayer === previousLayer)) {
             mainAudioLayer = layer;
         }
 
@@ -1230,7 +1434,12 @@
 
         source.start();
 
-        if (fadeOut > 0 && buffer.duration > fadeOut) {
+        const comboWillCrossfadeOut = Boolean(
+            options.comboRunKey &&
+            Number(options.outgoingCrossfadeMs) > 0 &&
+            options.outgoingWaitForEnd
+        );
+        if (!comboWillCrossfadeOut && fadeOut > 0 && buffer.duration > fadeOut) {
             const stopAt =
                 startTime +
                 Math.max(0, buffer.duration - fadeOut);
@@ -1244,6 +1453,228 @@
             TRIGGERS[index].name,
             isMain ? '' : pan > 0 ? '(right)' : pan < 0 ? '(left)' : '(center)'
         );
+
+        return options.returnLayer ? layer : true;
+    }
+
+    // LOCAL TRIGGER VISUAL EFFECTS
+
+    function getTriggerVisualSymbols(index) {
+        const trigger = TRIGGERS[index];
+        const name = String(trigger?.name || '').toLowerCase();
+
+        if (name.includes('focus')) return ['✦', '🎯', '✧', '✨'];
+        if (name.includes('freeze')) return ['❄', '✧', '❄', '✦'];
+        if (name.includes('reset')) return ['✨', '♡', '✧', '💫'];
+        if (name.includes("does as she's told")) return ['💗', '✦', '♡', '✨'];
+        if (name.includes('sleep')) return ['🌙', 'z', '💤', '✧'];
+        if (name.includes('wake')) return ['☀', '✦', '✨', '💫'];
+        if (name.includes('blonde moment')) return ['💫', '✧', '⭐', '💗'];
+        if (name.includes('drop for cock')) return ['↓', '✦', '♡', '💫'];
+        if (name.includes('good girl')) return ['💖', '♡', '♥', '✧'];
+        if (name.includes('safe and secure')) return ['♡', '🫧', '✧', '💗'];
+        if (name.includes('snap and forget')) return ['✧', '◈', '✨', '⋆'];
+        if (name.includes('zap cock drain obey')) return ['⚡', '✦', '⚡', '💫'];
+        if (name.includes('bambi obeys')) return ['💗', '♡', '✧', '💖'];
+        if (name.includes('airhead barbie')) return ['💋', '💖', '✧', '♡'];
+        if (name.includes('braindead bobblehead')) return ['🫧', '💫', '✧', '🫧'];
+        if (name.includes('cockblank lovedoll')) return ['✧', '♡', '✨', '⋆'];
+        return ['💗', '✧', '✨', '♡'];
+    }
+
+    function showTriggerVisualEffect(index, customName = '') {
+        try {
+            if (!document.body) return;
+
+            const styleId = 'bambiObeysVisualEffectsStyle';
+            if (!document.getElementById(styleId)) {
+                const style = document.createElement('style');
+                style.id = styleId;
+                style.textContent = `
+                    @keyframes bambiObeysLocalSparkle {
+                        0% { opacity: 0; transform: translate3d(0, 12px, 0) scale(.45) rotate(0deg); }
+                        16% { opacity: .95; }
+                        100% { opacity: 0; transform: translate3d(var(--bambi-drift, 0px), -125px, 0) scale(1.2) rotate(var(--bambi-rotate, 22deg)); }
+                    }
+                    .bambi-obeys-local-fx {
+                        position: fixed;
+                        inset: 0;
+                        overflow: hidden;
+                        pointer-events: none;
+                        z-index: 999998;
+                    }
+                    .bambi-obeys-local-fx > span {
+                        position: absolute;
+                        display: block;
+                        line-height: 1;
+                        user-select: none;
+                        will-change: transform, opacity;
+                        animation-name: bambiObeysLocalSparkle;
+                        animation-timing-function: ease-out;
+                        animation-fill-mode: forwards;
+                        filter: drop-shadow(0 1px 6px rgba(255, 105, 180, .45));
+                    }
+                `;
+                document.head.appendChild(style);
+            }
+
+            const triggerName = String(customName || TRIGGERS[index]?.name || 'Bambi');
+            const symbols = getTriggerVisualSymbols(index);
+            const overlay = document.createElement('div');
+            overlay.className = 'bambi-obeys-local-fx';
+            overlay.setAttribute('aria-hidden', 'true');
+            overlay.dataset.trigger = triggerName;
+
+            const count = triggerName.toLowerCase().includes('sleep') ? 7 : 11;
+            for (let i = 0; i < count; i += 1) {
+                const particle = document.createElement('span');
+                particle.textContent = symbols[Math.floor(Math.random() * symbols.length)];
+                particle.style.left = `${5 + Math.random() * 90}%`;
+                particle.style.top = `${48 + Math.random() * 42}%`;
+                particle.style.fontSize = `${15 + Math.round(Math.random() * 17)}px`;
+                particle.style.color = ['#ff9bce', '#ffc6e3', '#f7d8ff', '#fff0fa'][Math.floor(Math.random() * 4)];
+                particle.style.setProperty('--bambi-drift', `${Math.round(Math.random() * 120 - 60)}px`);
+                particle.style.setProperty('--bambi-rotate', `${Math.round(Math.random() * 90 - 45)}deg`);
+                particle.style.animationDuration = `${1250 + Math.round(Math.random() * 700)}ms`;
+                particle.style.animationDelay = `${Math.round(Math.random() * 170)}ms`;
+                overlay.appendChild(particle);
+            }
+
+            document.body.appendChild(overlay);
+            setTimeout(() => overlay.remove(), 2400);
+        } catch (error) {
+            console.debug('Bambi Obeys: local visual effect failed', error);
+        }
+    }
+
+    function applyBuiltInTriggerEffect(index) {
+        const sleepIndex = triggerIndexByName('Bambi sleep');
+        const wakeIndex = triggerIndexByName('Bambi wake and obey');
+        const forgetIndex = triggerIndexByName('Snap and forget');
+
+        if (index === sleepIndex) {
+            startBambiSleepState();
+        } else if (index === wakeIndex) {
+            wakeCharacter(true);
+            clearBambiSleepState();
+        } else if (index === forgetIndex) {
+            activateSnapAndForget();
+        }
+    }
+
+    function waitForComboDelay(control, milliseconds) {
+        const duration = Math.max(0, Number(milliseconds) || 0);
+        if (control.stopped || duration <= 0) return Promise.resolve();
+
+        return new Promise(resolve => {
+            const finish = () => {
+                control.timers.delete(timer);
+                control.waiters.delete(finish);
+                resolve();
+            };
+            const timer = setTimeout(finish, duration);
+            control.timers.add(timer);
+            control.waiters.add(finish);
+        });
+    }
+
+    function stopComboRun(runKey) {
+        const control = comboRuns.get(runKey);
+        if (!control) return false;
+
+        control.stopped = true;
+        for (const timer of control.timers) clearTimeout(timer);
+        control.timers.clear();
+        for (const wakeWaiter of [...control.waiters]) wakeWaiter();
+        control.waiters.clear();
+
+        for (const layer of [...activeLayers]) {
+            if (layer.comboRunKey !== runKey) continue;
+            stopLayer(layer);
+            activeLayers.delete(layer);
+            if (mainAudioLayer === layer) mainAudioLayer = null;
+        }
+
+        if (comboRuns.get(runKey) === control) comboRuns.delete(runKey);
+        return true;
+    }
+
+    async function runCustomCombo(comboValue, runKey) {
+        const combo = normalizeComboDefinition(comboValue);
+        if (!combo || !combo.name) return false;
+
+        if (comboRuns.has(runKey)) {
+            setStatus(`"${combo.name}" is already running.`);
+            return false;
+        }
+
+        const control = {
+            stopped: false,
+            timers: new Set(),
+            waiters: new Set(),
+            lastLayer: null,
+            pendingCrossfadeMs: 0
+        };
+        comboRuns.set(runKey, control);
+
+        try {
+            do {
+                for (let stepIndex = 0; stepIndex < combo.steps.length; stepIndex += 1) {
+                    if (control.stopped) break;
+
+                    const step = combo.steps[stepIndex];
+                    const trigger = TRIGGERS[step.triggerIndex];
+                    if (!trigger || trigger.isCustomCombo || trigger.isCustomLoopStop) continue;
+                    if (settings.enabledTriggers?.[trigger.name] === false) continue;
+
+                    applyBuiltInTriggerEffect(step.triggerIndex);
+                    showTriggerVisualEffect(step.triggerIndex);
+
+                    let buffer;
+                    try {
+                        buffer = await getAudioBuffer(step.triggerIndex);
+                    } catch (error) {
+                        console.error('Bambi Obeys: combo audio load failed', trigger.name, error);
+                        continue;
+                    }
+
+                    if (control.stopped) break;
+
+                    const hasNextStep = stepIndex < combo.steps.length - 1;
+                    const hasTransition = hasNextStep || combo.loop;
+                    const played = await playLayer(step.triggerIndex, {
+                        pan: step.pan,
+                        volume: step.volume,
+                        comboRunKey: runKey,
+                        crossfadeMs: control.pendingCrossfadeMs,
+                        crossfadeFromLayer: control.lastLayer,
+                        outgoingCrossfadeMs: hasTransition ? step.crossfadeMs : 0,
+                        outgoingWaitForEnd: Boolean(step.waitForEnd),
+                        returnLayer: true
+                    });
+                    if (!played) continue;
+                    control.lastLayer = played;
+                    control.pendingCrossfadeMs = 0;
+
+                    if (hasNextStep || combo.loop) {
+                        const audioDurationMs = Math.ceil(buffer.duration * 1000);
+                        const waitMs = step.waitForEnd
+                            ? Math.max(0, audioDurationMs - step.crossfadeMs)
+                            : step.delayMs;
+                        await waitForComboDelay(control, waitMs);
+                        control.pendingCrossfadeMs = step.crossfadeMs;
+                    }
+                }
+            } while (combo.loop && !control.stopped);
+        } catch (error) {
+            console.error('Bambi Obeys: custom combo failed', combo.name, error);
+        } finally {
+            for (const timer of control.timers) clearTimeout(timer);
+            control.timers.clear();
+            for (const wakeWaiter of [...control.waiters]) wakeWaiter();
+            control.waiters.clear();
+            if (comboRuns.get(runKey) === control) comboRuns.delete(runKey);
+        }
 
         return true;
     }
@@ -1281,6 +1712,13 @@
         const trigger = TRIGGERS[index];
         if (!trigger) return false;
 
+        // A loop's stop trigger must never be blocked by cooldown or audio limits.
+        if (trigger.isCustomLoopStop) {
+            const stopped = stopComboRun(`local:${trigger.comboId}`);
+            setStatus(stopped ? `Stopped "${trigger.comboName}".` : 'That combo is not currently running.');
+            return stopped;
+        }
+
         if (
             !options.ignoreLocalSafety &&
             !triggerAllowedLocally(index)
@@ -1295,25 +1733,23 @@
         lastTriggerTime = now();
         triggerHistory.push(lastTriggerTime);
 
-        if (!options.skipCharacterEffect) {
-            const sleepIndex = triggerIndexByName('Bambi sleep');
-            const wakeIndex = triggerIndexByName('Bambi wake and obey');
-            const forgetIndex = triggerIndexByName('Snap and forget');
-
-            if (index === sleepIndex) {
-                startBambiSleepState();
-            } else if (index === wakeIndex) {
-                wakeCharacter(true);
-                clearBambiSleepState();
-            } else if (index === forgetIndex) {
-                activateSnapAndForget();
-            }
+        if (trigger.isCustomCombo) {
+            showTriggerVisualEffect(-1, trigger.name);
+            return runCustomCombo(trigger.combo, `local:${trigger.comboId}`);
         }
 
+        if (!options.skipCharacterEffect) {
+            applyBuiltInTriggerEffect(index);
+        }
+        showTriggerVisualEffect(index);
         return playLayer(index);
     }
 
     function stopAllLayers() {
+        for (const runKey of [...comboRuns.keys()]) {
+            stopComboRun(runKey);
+        }
+
         const layers = [...activeLayers];
         for (const layer of layers) {
             stopLayer(layer);
@@ -1323,7 +1759,6 @@
         mainAudioLayer = null;
         setStatus('Stopped all Bambi audio.');
     }
-
 
     // CHARACTER SLEEP / AUTO WAKE
 
@@ -1981,7 +2416,8 @@
             return;
         }
 
-        if (!TRIGGERS[triggerIndex]) return;
+        const trigger = TRIGGERS[triggerIndex];
+        if (!trigger) return;
 
         if (!settings.outOfRoomTriggers && !isInCurrentRoom(target)) {
             setStatus('Out of room triggers are disabled.');
@@ -1989,30 +2425,39 @@
         }
 
         const requestId = createTriggerRequestId();
+        pendingTriggerRequests.set(requestId, {
+            memberNumber: target,
+            triggerIndex,
+            triggerLabel: trigger.name
+        });
 
-        pendingTriggerRequests.set(
+        const payload = {
+            type: 'trigger',
+            targetMemberNumber: target,
+            triggerIndex,
             requestId,
-            {
-                memberNumber: target,
-                triggerIndex
-            }
-        );
+            senderName: typeof Player !== 'undefined' ? Player.Name || 'Bambi' : 'Bambi'
+        };
 
-        const sent =
-            sendBambiAccountMessage(
-                target,
-                {
-                    type: 'trigger',
-                    targetMemberNumber: target,
-                    triggerIndex,
-                    requestId,
-                    senderName:
-                        typeof Player !== 'undefined'
-                            ? Player.Name || 'Bambi'
-                            : 'Bambi'
-                }
-            );
+        if (trigger.isCustomCombo) {
+            payload.customCombo = {
+                id: trigger.combo.id,
+                name: trigger.combo.name,
+                loop: Boolean(trigger.combo.loop),
+                steps: trigger.combo.steps.map(step => ({
+                    triggerIndex: step.triggerIndex,
+                    pan: step.pan,
+                    volume: step.volume,
+                    delayMs: step.delayMs,
+                    crossfadeMs: step.crossfadeMs,
+                    waitForEnd: Boolean(step.waitForEnd)
+                }))
+            };
+        } else if (trigger.isCustomLoopStop) {
+            payload.stopComboId = trigger.comboId;
+        }
 
+        const sent = sendBambiAccountMessage(target, payload);
         if (!sent) {
             pendingTriggerRequests.delete(requestId);
             setStatus('Could not send the trigger.');
@@ -2022,13 +2467,128 @@
         setStatus('Sent');
 
         setTimeout(() => {
-            if (!pendingTriggerRequests.has(requestId)) {
-                return;
-            }
-
+            if (!pendingTriggerRequests.has(requestId)) return;
             pendingTriggerRequests.delete(requestId);
             setStatus('No response');
         }, 8000);
+    }
+
+    function createComboShareRequestId() {
+        return `combo-share-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    }
+
+    function shareCustomComboToUser(memberNumber, comboId) {
+        const target = normalizeMemberNumber(memberNumber);
+        const myNumber = normalizeMemberNumber(
+            typeof Player !== 'undefined' ? Player.MemberNumber : 0
+        );
+        const combo = customCombos.find(item => item.id === String(comboId));
+
+        if (!target) {
+            setStatus('Choose a player or enter their Member Number.');
+            return false;
+        }
+        if (target === myNumber) {
+            setStatus('You already have this combo.');
+            return false;
+        }
+        if (!combo) {
+            setStatus('Choose a custom combo to share.');
+            return false;
+        }
+
+        const requestId = createComboShareRequestId();
+        const transferableCombo = {
+            id: combo.id,
+            name: combo.name,
+            loop: Boolean(combo.loop),
+            steps: combo.steps.map(step => ({
+                triggerIndex: step.triggerIndex,
+                pan: step.pan,
+                volume: step.volume,
+                delayMs: step.delayMs,
+                crossfadeMs: step.crossfadeMs,
+                waitForEnd: Boolean(step.waitForEnd)
+            }))
+        };
+
+        const sent = sendBambiAccountMessage(target, {
+            type: 'combo_share_request',
+            targetMemberNumber: target,
+            requestId,
+            senderName: typeof Player !== 'undefined' ? Player.Name || 'Bambi' : 'Bambi',
+            customCombo: transferableCombo
+        });
+
+        if (!sent) {
+            setStatus('Could not send the combo share request.');
+            return false;
+        }
+
+        pendingComboShareSends.set(requestId, {
+            memberNumber: target,
+            comboName: combo.name
+        });
+        setStatus(`Combo share request sent for "${combo.name}".`);
+
+        setTimeout(() => {
+            if (!pendingComboShareSends.has(requestId)) return;
+            pendingComboShareSends.delete(requestId);
+            setStatus('No response to combo share request.');
+        }, 30000);
+
+        return true;
+    }
+
+    function respondToComboShare(requestId, accepted) {
+        const index = pendingComboShares.findIndex(item => item.requestId === requestId);
+        if (index < 0) return;
+
+        const request = pendingComboShares[index];
+        pendingComboShares.splice(index, 1);
+        savePendingComboShares();
+
+        let importedName = request.combo.name;
+        if (accepted) {
+            const baseName = request.combo.name.slice(0, 48);
+            importedName = baseName;
+            let suffix = 2;
+            while (customCombos.some(item => item.name.toLowerCase() === importedName.toLowerCase())) {
+                const ending = suffix === 2 ? ' (shared)' : ` (shared ${suffix})`;
+                importedName = `${baseName.slice(0, Math.max(1, 60 - ending.length))}${ending}`;
+                suffix += 1;
+            }
+
+            const imported = normalizeComboDefinition({
+                ...request.combo,
+                id: createComboId(),
+                name: importedName
+            });
+
+            if (imported) {
+                customCombos.push(imported);
+                saveCustomCombos();
+                if (typeof customSavedListRefresh === 'function') customSavedListRefresh();
+            } else {
+                accepted = false;
+            }
+        }
+
+        sendBambiAccountMessage(request.senderMemberNumber, {
+            type: 'combo_share_result',
+            targetMemberNumber: request.senderMemberNumber,
+            requestId: request.requestId,
+            accepted: Boolean(accepted),
+            comboName: request.combo.name,
+            senderName: typeof Player !== 'undefined' ? Player.Name || 'Bambi' : 'Bambi'
+        });
+
+        setStatus(
+            accepted
+                ? `Accepted combo "${importedName}" from ${request.senderName}.`
+                : `Refused combo "${request.combo.name}" from ${request.senderName}.`
+        );
+        refreshCustomShareControls();
     }
 
     function packetIsForMe(payload) {
@@ -2485,7 +3045,7 @@
                     : `#${sender}`;
 
                 setStatus(
-                    `Sent "${TRIGGERS[pending.triggerIndex]?.name || 'trigger'}" to ${targetName}`
+                    `Sent "${pending.triggerLabel || TRIGGERS[pending.triggerIndex]?.name || 'trigger'}" to ${targetName}`
                 );
             } else {
                 setStatus('No access');
@@ -2494,34 +3054,103 @@
             return true;
         }
 
+        if (payload.type === 'combo_share_result') {
+            const requestId = String(payload.requestId || '');
+            const pending = pendingComboShareSends.get(requestId);
+            if (!pending || pending.memberNumber !== sender) return true;
+
+            pendingComboShareSends.delete(requestId);
+            const targetName = isInCurrentRoom(sender) ? getCharacterName(sender) : `#${sender}`;
+            setStatus(
+                payload.accepted === true
+                    ? `${targetName} accepted "${pending.comboName}".`
+                    : `${targetName} refused "${pending.comboName}".`
+            );
+            return true;
+        }
+
         if (!packetIsForMe(payload)) return true;
 
-        if (payload.type === 'trigger') {
-            const index = Number(payload.triggerIndex);
-
-            if (
-                !Number.isInteger(index) ||
-                !TRIGGERS[index]
-            ) {
+        if (payload.type === 'combo_share_request') {
+            const requestId = String(payload.requestId || '').slice(0, 160);
+            const incomingCombo = normalizeComboDefinition(payload.customCombo);
+            if (!requestId || !incomingCombo) {
+                if (requestId) {
+                    sendBambiAccountMessage(sender, {
+                        type: 'combo_share_result',
+                        targetMemberNumber: sender,
+                        requestId,
+                        accepted: false,
+                        comboName: String(payload.customCombo?.name || 'custom combo').slice(0, 60)
+                    });
+                }
                 return true;
             }
 
-            const resultRequestId =
-                String(payload.requestId || '');
+            const duplicate = pendingComboShares.some(item => item.requestId === requestId);
+            if (!duplicate && pendingComboShares.length < 30) {
+                pendingComboShares.push({
+                    requestId,
+                    senderMemberNumber: sender,
+                    senderName: String(resolvedSenderName || payload.senderName || `#${sender}`).slice(0, 80),
+                    combo: incomingCombo,
+                    receivedAt: now()
+                });
+                savePendingComboShares();
+                setStatus(`Combo share received from ${resolvedSenderName}.`);
+            } else if (pendingComboShares.length >= 30) {
+                sendBambiAccountMessage(sender, {
+                    type: 'combo_share_result',
+                    targetMemberNumber: sender,
+                    requestId,
+                    accepted: false,
+                    comboName: incomingCombo.name
+                });
+            }
+            return true;
+        }
 
+        if (payload.type === 'trigger') {
+            const index = Number(payload.triggerIndex);
+            const incomingCombo = payload.customCombo
+                ? normalizeComboDefinition(payload.customCombo)
+                : null;
+            const stopComboId = payload.stopComboId == null
+                ? ''
+                : String(payload.stopComboId).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 100);
+            const isCustomAction = Boolean(incomingCombo || stopComboId);
+
+            if (payload.stopComboId != null && !stopComboId) return true;
+
+            if (payload.customCombo && !incomingCombo) {
+                const invalidRequestId = String(payload.requestId || '');
+                if (invalidRequestId) {
+                    sendBambiAccountMessage(sender, {
+                        type: 'trigger_result',
+                        targetMemberNumber: sender,
+                        requestId: invalidRequestId,
+                        accepted: false,
+                        reason: 'invalid_combo'
+                    });
+                }
+                return true;
+            }
+
+            if (!isCustomAction && (!Number.isInteger(index) || !TRIGGERS[index])) {
+                return true;
+            }
+
+            const resultRequestId = String(payload.requestId || '');
             const sendResult = (accepted, reason = '') => {
                 if (!resultRequestId) return;
 
-                sendBambiAccountMessage(
-                    sender,
-                    {
-                        type: 'trigger_result',
-                        targetMemberNumber: sender,
-                        requestId: resultRequestId,
-                        accepted,
-                        reason
-                    }
-                );
+                sendBambiAccountMessage(sender, {
+                    type: 'trigger_result',
+                    targetMemberNumber: sender,
+                    requestId: resultRequestId,
+                    accepted,
+                    reason
+                });
             };
 
             if (!settings.acceptIncoming) {
@@ -2530,10 +3159,7 @@
                 return true;
             }
 
-            if (
-                !settings.outOfRoomTriggers &&
-                !isInCurrentRoom(sender)
-            ) {
+            if (!settings.outOfRoomTriggers && !isInCurrentRoom(sender)) {
                 setStatus('No access');
                 sendResult(false, 'out_of_room');
                 return true;
@@ -2555,12 +3181,16 @@
             }
 
             sendResult(true);
-            playTrigger(
-                index,
-                {
-                    senderMemberNumber: sender
-                }
-            );
+
+            if (incomingCombo) {
+                showTriggerVisualEffect(-1, incomingCombo.name);
+                runCustomCombo(incomingCombo, `remote:${sender}:${incomingCombo.id}`);
+            } else if (stopComboId) {
+                const stopped = stopComboRun(`remote:${sender}:${stopComboId}`);
+                if (stopped) setStatus(`Stopped remote combo from #${sender}.`);
+            } else {
+                playTrigger(index, { senderMemberNumber: sender });
+            }
 
             return true;
         }
@@ -3559,12 +4189,7 @@
         triggerSelect = document.createElement('select');
         styleSelect(triggerSelect);
 
-        TRIGGERS.forEach((trigger, index) => {
-            const option = document.createElement('option');
-            option.value = String(index);
-            option.textContent = trigger.name;
-            triggerSelect.appendChild(option);
-        });
+        refreshTriggerOptions();
 
         triggerSelect.addEventListener('change', () => {
             selectedTrigger = Number(triggerSelect.value);
@@ -3622,10 +4247,64 @@
         refreshTriggerDescription();
     }
 
+    function refreshTriggerOptions() {
+        if (!triggerSelect) return;
+
+        const previous = Number(triggerSelect.value);
+        triggerSelect.innerHTML = '';
+
+        TRIGGERS.forEach((trigger, index) => {
+            const option = document.createElement('option');
+            option.value = String(index);
+            option.textContent = trigger.name;
+            triggerSelect.appendChild(option);
+        });
+
+        if (Number.isInteger(previous) && TRIGGERS[previous]) {
+            selectedTrigger = previous;
+        } else if (!TRIGGERS[selectedTrigger]) {
+            selectedTrigger = 0;
+        }
+
+        triggerSelect.value = String(selectedTrigger);
+        refreshTriggerDescription();
+    }
+
     function refreshTriggerDescription() {
         if (!triggerDescription) return;
         triggerDescription.textContent =
             TRIGGERS[selectedTrigger]?.description || '';
+    }
+
+    function refreshCustomLimitControls() {
+        if (!customLimitsContainer) return;
+        customLimitsContainer.innerHTML = '';
+
+        if (customCombos.length === 0) {
+            const note = document.createElement('div');
+            note.textContent = 'Your custom combos will appear here after you save them.';
+            Object.assign(note.style, {
+                color: '#b77d9e',
+                fontSize: '10px',
+                lineHeight: '1.4',
+                marginBottom: '8px'
+            });
+            customLimitsContainer.appendChild(note);
+            return;
+        }
+
+        for (const combo of customCombos) {
+            customLimitsContainer.appendChild(
+                makeCheckbox(
+                    combo.name,
+                    settings.enabledTriggers[combo.name] !== false,
+                    checked => {
+                        settings.enabledTriggers[combo.name] = checked;
+                        saveSettings();
+                    }
+                )
+            );
+        }
     }
 
 
@@ -3794,7 +4473,7 @@
         enabledHeading.style.margin = '8px 0 7px';
         content.appendChild(enabledHeading);
 
-        TRIGGERS.forEach(trigger => {
+        TRIGGERS.slice(0, BUILTIN_TRIGGER_COUNT).forEach(trigger => {
             content.appendChild(
                 makeCheckbox(
                     trigger.name,
@@ -3806,6 +4485,18 @@
                 )
             );
         });
+
+        const customLimitsHeading = document.createElement('div');
+        customLimitsHeading.textContent = 'Custom combos';
+        Object.assign(customLimitsHeading.style, {
+            fontWeight: 'bold',
+            margin: '12px 0 7px'
+        });
+        content.appendChild(customLimitsHeading);
+
+        customLimitsContainer = document.createElement('div');
+        content.appendChild(customLimitsContainer);
+        refreshCustomLimitControls();
 
         content.appendChild(
             makeButton(
@@ -4019,8 +4710,677 @@
     }
 
 
+    // CUSTOM TAB
+
+    function buildCustomTab(content) {
+        const heading = document.createElement('div');
+        heading.textContent = 'Custom trigger combos';
+        Object.assign(heading.style, {
+            fontWeight: 'bold',
+            fontSize: '14px',
+            color: '#ff9bce',
+            marginBottom: '5px'
+        });
+        content.appendChild(heading);
+
+        const intro = document.createElement('div');
+        intro.textContent = 'Build a sequence from existing triggers. Every set has its own pan, volume, and timing. Saved combos appear in the Triggers tab.';
+        Object.assign(intro.style, {
+            color: '#d994ba',
+            fontSize: '10px',
+            lineHeight: '1.45',
+            marginBottom: '10px'
+        });
+        content.appendChild(intro);
+
+        const newButton = makeButton('＋ New combo', () => {
+            renderEditor({
+                id: createComboId(),
+                name: '',
+                loop: false,
+                steps: [{
+                    triggerIndex: 0,
+                    pan: 0,
+                    volume: 1,
+                    delayMs: 0,
+                    crossfadeMs: 0,
+                    waitForEnd: true
+                }]
+            });
+        }, true);
+        newButton.style.fontSize = '13px';
+        newButton.style.padding = '10px';
+        content.appendChild(newButton);
+
+        const editor = document.createElement('div');
+        Object.assign(editor.style, {
+            display: 'none',
+            border: '1px solid #ff69b4',
+            borderRadius: '7px',
+            padding: '9px',
+            margin: '8px 0 12px',
+            background: 'rgba(255,105,180,0.06)'
+        });
+        content.appendChild(editor);
+
+        const savedHeading = document.createElement('div');
+        savedHeading.textContent = 'Saved combos';
+        Object.assign(savedHeading.style, {
+            fontWeight: 'bold',
+            color: '#ffb8d9',
+            margin: '12px 0 7px'
+        });
+        content.appendChild(savedHeading);
+
+        const savedList = document.createElement('div');
+        content.appendChild(savedList);
+
+        let draft = null;
+        let editingExisting = false;
+        let previewRunKey = '';
+
+        function makeFieldLabel(text) {
+            const label = document.createElement('div');
+            label.textContent = text;
+            Object.assign(label.style, {
+                color: '#ffb8d9',
+                fontSize: '11px',
+                marginBottom: '4px'
+            });
+            return label;
+        }
+
+        function renderEditor(comboValue) {
+            draft = clone(comboValue);
+            editingExisting = customCombos.some(combo => combo.id === draft.id);
+            if (!Array.isArray(draft.steps) || !draft.steps.length) {
+                draft.steps = [{ triggerIndex: 0, pan: 0, volume: 1, delayMs: 0, crossfadeMs: 0, waitForEnd: true }];
+            }
+
+            editor.innerHTML = '';
+            editor.style.display = 'block';
+
+            const editorTitle = document.createElement('div');
+            editorTitle.textContent = editingExisting ? 'Edit combo' : 'New combo';
+            Object.assign(editorTitle.style, {
+                fontWeight: 'bold',
+                fontSize: '13px',
+                color: '#ff9bce',
+                marginBottom: '8px'
+            });
+            editor.appendChild(editorTitle);
+
+            editor.appendChild(makeFieldLabel('Combo name'));
+            const nameInput = document.createElement('input');
+            nameInput.type = 'text';
+            nameInput.maxLength = 60;
+            nameInput.placeholder = 'For example, Bambi loop';
+            nameInput.value = draft.name || '';
+            Object.assign(nameInput.style, {
+                width: '100%',
+                boxSizing: 'border-box',
+                padding: '7px',
+                marginBottom: '10px',
+                background: '#fff0f7',
+                color: '#48172f',
+                border: '1px solid #ff69b4',
+                borderRadius: '5px'
+            });
+            nameInput.addEventListener('input', () => {
+                draft.name = nameInput.value;
+            });
+            editor.appendChild(nameInput);
+
+            const stepsContainer = document.createElement('div');
+            editor.appendChild(stepsContainer);
+
+            function renderSteps() {
+                stepsContainer.innerHTML = '';
+                draft.steps.forEach((step, stepIndex) => {
+                    const card = document.createElement('div');
+                    Object.assign(card.style, {
+                        border: '1px solid #804266',
+                        borderRadius: '6px',
+                        padding: '8px',
+                        marginBottom: '8px',
+                        background: 'rgba(0,0,0,0.12)'
+                    });
+
+                    const stepHeader = document.createElement('div');
+                    Object.assign(stepHeader.style, {
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        marginBottom: '7px'
+                    });
+                    const stepTitle = document.createElement('div');
+                    stepTitle.textContent = stepIndex === 0 ? 'First set' : stepIndex === 1 ? 'Second set' : stepIndex === 2 ? 'Third set' : `${stepIndex + 1}${[11, 12, 13].includes((stepIndex + 1) % 100) ? 'th' : (stepIndex + 1) % 10 === 1 ? 'st' : (stepIndex + 1) % 10 === 2 ? 'nd' : (stepIndex + 1) % 10 === 3 ? 'rd' : 'th'} set`;
+                    stepTitle.style.fontWeight = 'bold';
+                    stepTitle.style.color = '#ffb8d9';
+                    stepHeader.appendChild(stepTitle);
+
+                    if (draft.steps.length > 1) {
+                        const removeButton = document.createElement('button');
+                        removeButton.type = 'button';
+                        removeButton.textContent = 'Remove';
+                        Object.assign(removeButton.style, {
+                            background: '#5b2447',
+                            color: '#fff',
+                            border: '1px solid #9d477e',
+                            borderRadius: '4px',
+                            padding: '3px 6px',
+                            cursor: 'pointer',
+                            fontSize: '10px'
+                        });
+                        removeButton.addEventListener('click', () => {
+                            draft.steps.splice(stepIndex, 1);
+                            renderSteps();
+                        });
+                        stepHeader.appendChild(removeButton);
+                    }
+                    card.appendChild(stepHeader);
+
+                    card.appendChild(makeFieldLabel('Trigger'));
+                    const triggerInput = document.createElement('select');
+                    styleSelect(triggerInput);
+                    TRIGGERS.slice(0, BUILTIN_TRIGGER_COUNT).forEach((trigger, index) => {
+                        const option = document.createElement('option');
+                        option.value = String(index);
+                        option.textContent = trigger.name;
+                        triggerInput.appendChild(option);
+                    });
+                    triggerInput.value = String(step.triggerIndex);
+                    triggerInput.addEventListener('change', () => {
+                        step.triggerIndex = Number(triggerInput.value);
+                    });
+                    card.appendChild(triggerInput);
+
+                    card.appendChild(makeNumberSlider(
+                        'Ear panning',
+                        -1,
+                        1,
+                        0.05,
+                        step.pan,
+                        value => {
+                            if (value <= -0.99) return 'Hard left';
+                            if (value >= 0.99) return 'Hard right';
+                            if (Math.abs(value) < 0.025) return 'Middle';
+                            return value < 0 ? `Left ${Math.round(Math.abs(value) * 100)}%` : `Right ${Math.round(value * 100)}%`;
+                        },
+                        value => { step.pan = value; }
+                    ));
+
+                    card.appendChild(makeNumberSlider(
+                        'Volume',
+                        0,
+                        100,
+                        1,
+                        Math.round(clampNumber(step.volume, 0, 1, 1) * 100),
+                        value => `${value}%`,
+                        value => { step.volume = value / 100; }
+                    ));
+
+                    card.appendChild(makeFieldLabel('Delay before next set (ms)'));
+                    const delayInput = document.createElement('input');
+                    delayInput.type = 'number';
+                    delayInput.min = '0';
+                    delayInput.max = '600000';
+                    delayInput.step = '50';
+                    delayInput.value = String(Math.round(clampNumber(step.delayMs, 0, 600000, 0)));
+                    Object.assign(delayInput.style, {
+                        width: '100%',
+                        boxSizing: 'border-box',
+                        padding: '6px',
+                        marginBottom: '5px',
+                        background: '#fff0f7',
+                        color: '#48172f',
+                        border: '1px solid #ff69b4',
+                        borderRadius: '5px'
+                    });
+                    delayInput.disabled = Boolean(step.waitForEnd);
+                    delayInput.style.opacity = delayInput.disabled ? '0.5' : '1';
+                    delayInput.addEventListener('input', () => {
+                        step.delayMs = Math.round(clampNumber(delayInput.value, 0, 600000, 0));
+                    });
+                    card.appendChild(delayInput);
+
+                    card.appendChild(makeCheckbox(
+                        'Wait for audio to finish instead',
+                        Boolean(step.waitForEnd),
+                        checked => {
+                            step.waitForEnd = checked;
+                            delayInput.disabled = checked;
+                            delayInput.style.opacity = checked ? '0.5' : '1';
+                        }
+                    ));
+
+                    card.appendChild(makeNumberSlider(
+                        'Crossfade into next trigger',
+                        0,
+                        10000,
+                        50,
+                        Math.round(clampNumber(step.crossfadeMs, 0, 10000, 0)),
+                        value => value === 0 ? 'Off' : `${value} ms`,
+                        value => { step.crossfadeMs = Math.round(value); }
+                    ));
+
+                    const crossfadeNote = document.createElement('div');
+                    crossfadeNote.textContent = 'The current set fades down while the next set fades up over this duration.';
+                    Object.assign(crossfadeNote.style, {
+                        color: '#b77d9e',
+                        fontSize: '10px',
+                        lineHeight: '1.35',
+                        marginTop: '-5px',
+                        marginBottom: '5px'
+                    });
+                    card.appendChild(crossfadeNote);
+
+                    stepsContainer.appendChild(card);
+                });
+            }
+
+            renderSteps();
+
+            const addStep = makeButton('＋ Add next trigger', () => {
+                if (draft.steps.length >= 32) {
+                    setStatus('A combo can contain up to 32 sets.');
+                    return;
+                }
+                draft.steps.push({
+                    triggerIndex: 0,
+                    pan: 0,
+                    volume: 1,
+                    delayMs: 0,
+                    crossfadeMs: 0,
+                    waitForEnd: true
+                });
+                renderSteps();
+            }, false);
+            addStep.style.padding = '6px';
+            editor.appendChild(addStep);
+
+            editor.appendChild(makeCheckbox(
+                'Loop until stopped',
+                Boolean(draft.loop),
+                checked => { draft.loop = checked; }
+            ));
+
+            const footer = document.createElement('div');
+            Object.assign(footer.style, {
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr',
+                gap: '6px',
+                marginTop: '8px'
+            });
+
+            const testButton = makeButton('▶ Test draft', () => {
+                if (!draft || !draft.steps.length) {
+                    setStatus('Add at least one trigger before testing.');
+                    return;
+                }
+                if (previewRunKey && comboRuns.has(previewRunKey)) {
+                    stopComboRun(previewRunKey);
+                }
+                const testCombo = normalizeComboDefinition({
+                    ...clone(draft),
+                    name: String(draft.name || 'Combo preview').trim() || 'Combo preview'
+                }, { createId: true });
+                if (!testCombo) {
+                    setStatus('Add at least one valid trigger set before testing.');
+                    return;
+                }
+                const runKey = `preview:${createComboId()}`;
+                previewRunKey = runKey;
+                setStatus(`Testing draft "${testCombo.name}"${testCombo.loop ? ' (looping)' : ''}.`);
+                runCustomCombo(testCombo, runKey).finally(() => {
+                    if (previewRunKey === runKey) previewRunKey = '';
+                });
+            }, false);
+            testButton.style.marginBottom = '0';
+
+            const stopTestButton = makeButton('■ Stop test', () => {
+                if (previewRunKey && stopComboRun(previewRunKey)) {
+                    setStatus('Combo preview stopped.');
+                } else {
+                    setStatus('No combo preview is running.');
+                }
+                previewRunKey = '';
+            }, false);
+            stopTestButton.style.marginBottom = '0';
+
+            const saveButton = makeButton('Save combo', () => {
+                if (previewRunKey && comboRuns.has(previewRunKey)) {
+                    stopComboRun(previewRunKey);
+                    previewRunKey = '';
+                }
+                const name = String(draft.name || '').trim();
+                if (!name) {
+                    setStatus('Give your combo a name first.');
+                    nameInput.focus();
+                    return;
+                }
+
+                if (customCombos.some(combo => combo.id !== draft.id && combo.name.toLowerCase() === name.toLowerCase())) {
+                    setStatus('A combo with that name already exists.');
+                    nameInput.focus();
+                    return;
+                }
+
+                draft.name = name;
+                const normalized = normalizeComboDefinition(draft);
+                if (!normalized) {
+                    setStatus('Add at least one valid trigger set.');
+                    return;
+                }
+
+                const existingIndex = customCombos.findIndex(combo => combo.id === normalized.id);
+                if (existingIndex >= 0) customCombos[existingIndex] = normalized;
+                else customCombos.push(normalized);
+
+                saveCustomCombos();
+                refreshSavedList();
+                editor.style.display = 'none';
+                setStatus(`Saved custom combo "${normalized.name}".`);
+            }, true);
+            saveButton.style.marginBottom = '0';
+
+            const cancelButton = makeButton('Cancel', () => {
+                if (previewRunKey && comboRuns.has(previewRunKey)) stopComboRun(previewRunKey);
+                previewRunKey = '';
+                editor.style.display = 'none';
+                draft = null;
+            }, false);
+            cancelButton.style.marginBottom = '0';
+
+            footer.appendChild(testButton);
+            footer.appendChild(stopTestButton);
+            footer.appendChild(saveButton);
+            footer.appendChild(cancelButton);
+            editor.appendChild(footer);
+        }
+
+        function refreshSavedList() {
+            savedList.innerHTML = '';
+
+            if (customCombos.length === 0) {
+                const empty = document.createElement('div');
+                empty.textContent = 'No custom combos yet. Click + New combo to create one.';
+                Object.assign(empty.style, {
+                    fontSize: '11px',
+                    color: '#b77d9e',
+                    lineHeight: '1.4'
+                });
+                savedList.appendChild(empty);
+                return;
+            }
+
+            for (const combo of customCombos) {
+                const row = document.createElement('div');
+                Object.assign(row.style, {
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    padding: '7px',
+                    marginBottom: '6px',
+                    border: '1px solid #804266',
+                    borderRadius: '5px'
+                });
+
+                const labelWrap = document.createElement('div');
+                labelWrap.style.flex = '1';
+                const label = document.createElement('div');
+                label.textContent = combo.name;
+                Object.assign(label.style, {
+                    color: '#ffb8d9',
+                    fontSize: '11px',
+                    fontWeight: 'bold',
+                    overflowWrap: 'anywhere'
+                });
+                const detail = document.createElement('div');
+                detail.textContent = `${combo.steps.length} set${combo.steps.length === 1 ? '' : 's'}${combo.loop ? ' · loop + stop trigger' : ''}`;
+                Object.assign(detail.style, {
+                    color: '#b77d9e',
+                    fontSize: '10px',
+                    marginTop: '2px'
+                });
+                labelWrap.appendChild(label);
+                labelWrap.appendChild(detail);
+
+                const editButton = document.createElement('button');
+                editButton.type = 'button';
+                editButton.textContent = 'Edit';
+                Object.assign(editButton.style, {
+                    padding: '5px 7px',
+                    cursor: 'pointer',
+                    background: '#6b3158',
+                    color: '#fff',
+                    border: '1px solid #9d477e',
+                    borderRadius: '4px',
+                    fontSize: '10px'
+                });
+                editButton.addEventListener('click', () => renderEditor(combo));
+
+                const deleteButton = document.createElement('button');
+                deleteButton.type = 'button';
+                deleteButton.textContent = '×';
+                deleteButton.title = 'Delete combo';
+                Object.assign(deleteButton.style, {
+                    padding: '5px 7px',
+                    cursor: 'pointer',
+                    background: '#5b2447',
+                    color: '#fff',
+                    border: '1px solid #9d477e',
+                    borderRadius: '4px',
+                    fontSize: '11px'
+                });
+                deleteButton.addEventListener('click', () => {
+                    const confirmed = typeof window.confirm === 'function'
+                        ? window.confirm(`Delete the combo "${combo.name}"?`)
+                        : true;
+                    if (!confirmed) return;
+
+                    stopComboRun(`local:${combo.id}`);
+                    customCombos = customCombos.filter(item => item.id !== combo.id);
+                    saveCustomCombos();
+                    refreshSavedList();
+                    setStatus(`Deleted custom combo "${combo.name}".`);
+                });
+
+                row.appendChild(labelWrap);
+                row.appendChild(editButton);
+                row.appendChild(deleteButton);
+                savedList.appendChild(row);
+            }
+        }
+
+        refreshSavedList();
+        customSavedListRefresh = refreshSavedList;
+
+        const shareHeading = document.createElement('div');
+        shareHeading.textContent = 'Share a custom combo';
+        Object.assign(shareHeading.style, {
+            fontWeight: 'bold',
+            color: '#ffb8d9',
+            margin: '14px 0 7px'
+        });
+        content.appendChild(shareHeading);
+
+        const shareIntro = document.createElement('div');
+        shareIntro.textContent = 'Send a copy to another player. They must accept it in their own Custom tab before it is added to their saved combos.';
+        Object.assign(shareIntro.style, {
+            color: '#d994ba',
+            fontSize: '10px',
+            lineHeight: '1.4',
+            marginBottom: '7px'
+        });
+        content.appendChild(shareIntro);
+
+        customShareComboSelect = document.createElement('select');
+        styleSelect(customShareComboSelect);
+        content.appendChild(customShareComboSelect);
+
+        customShareTargetSelect = document.createElement('select');
+        styleSelect(customShareTargetSelect);
+        content.appendChild(customShareTargetSelect);
+
+        const memberNumberLabel = document.createElement('div');
+        memberNumberLabel.textContent = 'Or enter a Member Number (including another server)';
+        Object.assign(memberNumberLabel.style, {
+            color: '#ffb8d9',
+            fontSize: '10px',
+            marginBottom: '4px'
+        });
+        content.appendChild(memberNumberLabel);
+
+        customShareTargetMemberInput = document.createElement('input');
+        customShareTargetMemberInput.type = 'number';
+        customShareTargetMemberInput.min = '1';
+        customShareTargetMemberInput.placeholder = 'Member Number (optional)';
+        Object.assign(customShareTargetMemberInput.style, {
+            width: '100%',
+            boxSizing: 'border-box',
+            padding: '7px',
+            marginBottom: '7px',
+            background: '#fff0f7',
+            color: '#48172f',
+            border: '1px solid #ff69b4',
+            borderRadius: '5px'
+        });
+        content.appendChild(customShareTargetMemberInput);
+
+        content.appendChild(makeButton('💌 Share combo', () => {
+            const comboId = customShareComboSelect?.value || '';
+            const typedTarget = normalizeMemberNumber(customShareTargetMemberInput?.value);
+            const selectedTargetNumber = normalizeMemberNumber(customShareTargetSelect?.value);
+            shareCustomComboToUser(typedTarget || selectedTargetNumber, comboId);
+        }, true));
+
+        const pendingHeading = document.createElement('div');
+        pendingHeading.textContent = 'Combos shared with you';
+        Object.assign(pendingHeading.style, {
+            fontWeight: 'bold',
+            color: '#ffb8d9',
+            margin: '14px 0 7px'
+        });
+        content.appendChild(pendingHeading);
+
+        customSharePendingContainer = document.createElement('div');
+        content.appendChild(customSharePendingContainer);
+        refreshCustomShareControls();
+    }
+
+
     // UI REFRESH
 
+
+    function refreshCustomShareControls() {
+        if (customShareComboSelect) {
+            const oldCombo = customShareComboSelect.value;
+            customShareComboSelect.innerHTML = '';
+            if (!customCombos.length) {
+                const option = document.createElement('option');
+                option.value = '';
+                option.textContent = 'No saved custom combos';
+                customShareComboSelect.appendChild(option);
+            } else {
+                for (const combo of customCombos) {
+                    const option = document.createElement('option');
+                    option.value = combo.id;
+                    option.textContent = combo.name;
+                    customShareComboSelect.appendChild(option);
+                }
+            }
+            if ([...customShareComboSelect.options].some(option => option.value === oldCombo)) {
+                customShareComboSelect.value = oldCombo;
+            }
+            customShareComboSelect.disabled = customCombos.length === 0;
+        }
+
+        if (customShareTargetSelect) {
+            const oldTarget = customShareTargetSelect.value;
+            customShareTargetSelect.innerHTML = '';
+            const myNumber = normalizeMemberNumber(typeof Player !== 'undefined' ? Player.MemberNumber : 0);
+            const members = getRoomCharacters()
+                .map(character => ({
+                    memberNumber: normalizeMemberNumber(character?.MemberNumber),
+                    name: character?.Nickname || character?.Name || 'Unknown'
+                }))
+                .filter(entry => entry.memberNumber && entry.memberNumber !== myNumber)
+                .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = members.length ? 'Choose a player in this room' : 'No other players in room';
+            customShareTargetSelect.appendChild(placeholder);
+            for (const member of members) {
+                const option = document.createElement('option');
+                option.value = String(member.memberNumber);
+                option.textContent = `${member.name} (#${member.memberNumber})`;
+                customShareTargetSelect.appendChild(option);
+            }
+            if ([...customShareTargetSelect.options].some(option => option.value === oldTarget)) {
+                customShareTargetSelect.value = oldTarget;
+            }
+        }
+
+        if (customSharePendingContainer) {
+            customSharePendingContainer.innerHTML = '';
+            if (!pendingComboShares.length) {
+                const empty = document.createElement('div');
+                empty.textContent = 'No pending combo shares.';
+                Object.assign(empty.style, {
+                    color: '#b77d9e',
+                    fontSize: '10px',
+                    lineHeight: '1.4'
+                });
+                customSharePendingContainer.appendChild(empty);
+            } else {
+                for (const request of pendingComboShares) {
+                    const card = document.createElement('div');
+                    Object.assign(card.style, {
+                        border: '1px solid #804266',
+                        borderRadius: '5px',
+                        padding: '7px',
+                        marginBottom: '7px'
+                    });
+
+                    const title = document.createElement('div');
+                    title.textContent = request.combo.name;
+                    Object.assign(title.style, {
+                        fontSize: '11px',
+                        fontWeight: 'bold',
+                        color: '#ffb8d9',
+                        overflowWrap: 'anywhere'
+                    });
+                    card.appendChild(title);
+
+                    const detail = document.createElement('div');
+                    detail.textContent = `From ${request.senderName} (#${request.senderMemberNumber}) · ${request.combo.steps.length} set${request.combo.steps.length === 1 ? '' : 's'}${request.combo.loop ? ' · loop' : ''}`;
+                    Object.assign(detail.style, {
+                        fontSize: '10px',
+                        color: '#b77d9e',
+                        margin: '3px 0 7px'
+                    });
+                    card.appendChild(detail);
+
+                    const actions = document.createElement('div');
+                    Object.assign(actions.style, {
+                        display: 'grid',
+                        gridTemplateColumns: '1fr 1fr',
+                        gap: '5px'
+                    });
+                    const accept = makeButton('Accept', () => respondToComboShare(request.requestId, true), true);
+                    const refuse = makeButton('Refuse', () => respondToComboShare(request.requestId, false), false);
+                    accept.style.marginBottom = '0';
+                    refuse.style.marginBottom = '0';
+                    actions.appendChild(accept);
+                    actions.appendChild(refuse);
+                    card.appendChild(actions);
+                    customSharePendingContainer.appendChild(card);
+                }
+            }
+        }
+    }
 
     function refreshTargetDropdown() {
         if (!targetSelect) return;
@@ -4083,6 +5443,8 @@
         refreshTriggerDescription();
         refreshAuthorityControls();
         refreshAuthorityRoleStatus();
+        refreshCustomLimitControls();
+        refreshCustomShareControls();
     }
 
 
@@ -4255,7 +5617,7 @@
         const tabBar = document.createElement('div');
         Object.assign(tabBar.style, {
             display: 'grid',
-            gridTemplateColumns: 'repeat(4, 1fr)',
+            gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
             gap: '4px',
             marginBottom: '8px'
         });
@@ -4263,7 +5625,7 @@
         tabs = {};
         tabContents = {};
 
-        for (const name of ['Authority', 'Triggers', 'Limits', 'Customization']) {
+        for (const name of ['Authority', 'Triggers', 'Limits', 'Customization', 'Custom']) {
             const tabButton = document.createElement('button');
             tabButton.textContent = name;
             Object.assign(tabButton.style, {
@@ -4283,7 +5645,7 @@
 
         panel.appendChild(tabBar);
 
-        for (const name of ['Authority', 'Triggers', 'Limits', 'Customization']) {
+        for (const name of ['Authority', 'Triggers', 'Limits', 'Customization', 'Custom']) {
             const content = createContentArea();
             content.style.display = name === activeTab ? 'block' : 'none';
             tabContents[name] = content;
@@ -4294,6 +5656,7 @@
         buildTriggersTab(tabContents.Triggers);
         buildLimitsTab(tabContents.Limits);
         buildCustomizationTab(tabContents.Customization);
+        buildCustomTab(tabContents.Custom);
 
         container.appendChild(floatingButton);
         container.appendChild(panel);
