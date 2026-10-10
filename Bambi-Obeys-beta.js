@@ -7,7 +7,7 @@
 
     // CONFIG
 
-    const BAMBI_VERSION = '1.7.0-beta.1';
+    const BAMBI_VERSION = '1.7.0-beta.2';
     const PRODUCT_NAME = 'Bambi Obeys';
 
     const BASE_URL =
@@ -42,6 +42,9 @@
 
     const CUSTOM_COMBOS_KEY =
         'bambiObeysCustomCombos_v1';
+
+    const CUSTOM_SHARES_KEY =
+        'bambiObeysPendingComboShares_v1';
 
     const PROTOCOL =
         'BambiObeysMsg';
@@ -207,11 +210,18 @@
     let whitelistInput = null;
     let whitelistLabelElement = null;
     let customLimitsContainer = null;
+    let customShareComboSelect = null;
+    let customShareTargetSelect = null;
+    let customShareTargetMemberInput = null;
+    let customSharePendingContainer = null;
+    let customSavedListRefresh = null;
 
     const bambiPresence = new Map();
     const pendingTriggerRequests = new Map();
 
     let customCombos = [];
+    let pendingComboShares = [];
+    const pendingComboShareSends = new Map();
     const comboRuns = new Map();
 
     let bambiMod = null;
@@ -755,6 +765,7 @@
                     pan: clampNumber(step.pan, -1, 1, 0),
                     volume: clampNumber(step.volume, 0, 1, 1),
                     delayMs: Math.round(clampNumber(step.delayMs, 0, 600000, 0)),
+                    crossfadeMs: Math.round(clampNumber(step.crossfadeMs, 0, 10000, 0)),
                     waitForEnd: Boolean(step.waitForEnd)
                 };
             })
@@ -830,9 +841,43 @@
         refreshAllUI();
     }
 
+    function loadPendingComboShares() {
+        try {
+            const saved = JSON.parse(localStorage.getItem(CUSTOM_SHARES_KEY) || '[]');
+            pendingComboShares = Array.isArray(saved)
+                ? saved.slice(0, 30).map(request => {
+                    const combo = normalizeComboDefinition(request?.combo);
+                    const senderMemberNumber = normalizeMemberNumber(request?.senderMemberNumber);
+                    const requestId = String(request?.requestId || '').slice(0, 160);
+                    if (!combo || !senderMemberNumber || !requestId) return null;
+                    return {
+                        requestId,
+                        senderMemberNumber,
+                        senderName: String(request?.senderName || 'Someone').slice(0, 80),
+                        combo,
+                        receivedAt: Number(request?.receivedAt) || Date.now()
+                    };
+                }).filter(Boolean)
+                : [];
+        } catch (error) {
+            pendingComboShares = [];
+            console.error('Bambi Obeys: pending combo shares load failed', error);
+        }
+    }
+
+    function savePendingComboShares() {
+        try {
+            localStorage.setItem(CUSTOM_SHARES_KEY, JSON.stringify(pendingComboShares));
+        } catch (error) {
+            console.error('Bambi Obeys: pending combo shares save failed', error);
+        }
+        refreshCustomShareControls();
+    }
+
     function loadStorage() {
         migrateLegacySettings();
         loadCustomCombos();
+        loadPendingComboShares();
 
         for (const trigger of TRIGGERS) {
             if (
@@ -1239,11 +1284,11 @@
         } catch {}
     }
 
-    function trimActiveLayersIfNeeded() {
+    function trimActiveLayersIfNeeded(exemptLayer = null) {
         const limit = Math.max(1, Number(settings.maxSimultaneous) || 1);
 
         while (activeLayers.size >= limit) {
-            const oldest = activeLayers.values().next().value;
+            const oldest = [...activeLayers].find(layer => layer !== exemptLayer);
             if (!oldest) break;
             stopLayer(oldest);
             activeLayers.delete(oldest);
@@ -1264,7 +1309,7 @@
             }
         } catch {}
 
-        trimActiveLayersIfNeeded();
+        trimActiveLayersIfNeeded(options.crossfadeFromLayer || null);
 
         let buffer;
         try {
@@ -1317,12 +1362,43 @@
         const fadeIn = Math.max(0, Number(settings.fadeInMs) / 1000);
         const fadeOut = Math.max(0, Number(settings.fadeOutMs) / 1000);
         const startTime = context.currentTime;
+        const requestedCrossfadeMs = clampNumber(options.crossfadeMs, 0, 10000, 0);
+        const requestedCrossfadeSeconds = requestedCrossfadeMs / 1000;
+        const previousLayer = options.crossfadeFromLayer;
+        const previousRemainingSeconds = previousLayer && Number.isFinite(previousLayer.endsAt)
+            ? Math.max(0, previousLayer.endsAt - startTime)
+            : requestedCrossfadeSeconds;
+        const crossfadeSeconds = Math.min(requestedCrossfadeSeconds, previousRemainingSeconds);
+        const canCrossfade = Boolean(
+            crossfadeSeconds > 0 &&
+            previousLayer &&
+            activeLayers.has(previousLayer)
+        );
+        const effectiveFadeIn = canCrossfade ? crossfadeSeconds : fadeIn;
 
         gain.gain.setValueAtTime(0, startTime);
         gain.gain.linearRampToValueAtTime(
             initialGain,
-            startTime + Math.max(0.01, fadeIn)
+            startTime + Math.max(0.01, effectiveFadeIn)
         );
+
+        // When a combo step crossfades into this one, fade the previous step
+        // down over the same interval instead of abruptly cutting it off.
+        if (canCrossfade) {
+            try {
+                const previousGain = previousLayer.gain.gain;
+                previousGain.cancelScheduledValues(startTime);
+                previousGain.setValueAtTime(
+                    Math.max(0, Number(previousLayer.baseGain ?? previousGain.value) || 0),
+                    startTime
+                );
+                previousGain.linearRampToValueAtTime(0, startTime + crossfadeSeconds);
+                previousLayer.source.stop(startTime + crossfadeSeconds + 0.03);
+                previousLayer.endsAt = Math.min(previousLayer.endsAt, startTime + crossfadeSeconds + 0.03);
+            } catch (error) {
+                console.debug('Bambi Obeys: combo crossfade could not fade previous layer', error);
+            }
+        }
 
         const layer = {
             source,
@@ -1330,12 +1406,15 @@
             panner,
             index,
             isMain,
+            baseGain: initialGain,
+            startTime,
+            endsAt: startTime + buffer.duration,
             comboRunKey: options.comboRunKey || null
         };
 
         activeLayers.add(layer);
 
-        if (isMain) {
+        if (isMain || (canCrossfade && mainAudioLayer === previousLayer)) {
             mainAudioLayer = layer;
         }
 
@@ -1355,7 +1434,12 @@
 
         source.start();
 
-        if (fadeOut > 0 && buffer.duration > fadeOut) {
+        const comboWillCrossfadeOut = Boolean(
+            options.comboRunKey &&
+            Number(options.outgoingCrossfadeMs) > 0 &&
+            options.outgoingWaitForEnd
+        );
+        if (!comboWillCrossfadeOut && fadeOut > 0 && buffer.duration > fadeOut) {
             const stopAt =
                 startTime +
                 Math.max(0, buffer.duration - fadeOut);
@@ -1370,7 +1454,7 @@
             isMain ? '' : pan > 0 ? '(right)' : pan < 0 ? '(left)' : '(center)'
         );
 
-        return true;
+        return options.returnLayer ? layer : true;
     }
 
     // LOCAL TRIGGER VISUAL EFFECTS
@@ -1527,7 +1611,9 @@
         const control = {
             stopped: false,
             timers: new Set(),
-            waiters: new Set()
+            waiters: new Set(),
+            lastLayer: null,
+            pendingCrossfadeMs: 0
         };
         comboRuns.set(runKey, control);
 
@@ -1554,19 +1640,29 @@
 
                     if (control.stopped) break;
 
+                    const hasNextStep = stepIndex < combo.steps.length - 1;
+                    const hasTransition = hasNextStep || combo.loop;
                     const played = await playLayer(step.triggerIndex, {
                         pan: step.pan,
                         volume: step.volume,
-                        comboRunKey: runKey
+                        comboRunKey: runKey,
+                        crossfadeMs: control.pendingCrossfadeMs,
+                        crossfadeFromLayer: control.lastLayer,
+                        outgoingCrossfadeMs: hasTransition ? step.crossfadeMs : 0,
+                        outgoingWaitForEnd: Boolean(step.waitForEnd),
+                        returnLayer: true
                     });
                     if (!played) continue;
+                    control.lastLayer = played;
+                    control.pendingCrossfadeMs = 0;
 
-                    const hasNextStep = stepIndex < combo.steps.length - 1;
                     if (hasNextStep || combo.loop) {
+                        const audioDurationMs = Math.ceil(buffer.duration * 1000);
                         const waitMs = step.waitForEnd
-                            ? Math.ceil(buffer.duration * 1000)
+                            ? Math.max(0, audioDurationMs - step.crossfadeMs)
                             : step.delayMs;
                         await waitForComboDelay(control, waitMs);
+                        control.pendingCrossfadeMs = step.crossfadeMs;
                     }
                 }
             } while (combo.loop && !control.stopped);
@@ -2353,6 +2449,7 @@
                     pan: step.pan,
                     volume: step.volume,
                     delayMs: step.delayMs,
+                    crossfadeMs: step.crossfadeMs,
                     waitForEnd: Boolean(step.waitForEnd)
                 }))
             };
@@ -2374,6 +2471,124 @@
             pendingTriggerRequests.delete(requestId);
             setStatus('No response');
         }, 8000);
+    }
+
+    function createComboShareRequestId() {
+        return `combo-share-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    }
+
+    function shareCustomComboToUser(memberNumber, comboId) {
+        const target = normalizeMemberNumber(memberNumber);
+        const myNumber = normalizeMemberNumber(
+            typeof Player !== 'undefined' ? Player.MemberNumber : 0
+        );
+        const combo = customCombos.find(item => item.id === String(comboId));
+
+        if (!target) {
+            setStatus('Choose a player or enter their Member Number.');
+            return false;
+        }
+        if (target === myNumber) {
+            setStatus('You already have this combo.');
+            return false;
+        }
+        if (!combo) {
+            setStatus('Choose a custom combo to share.');
+            return false;
+        }
+
+        const requestId = createComboShareRequestId();
+        const transferableCombo = {
+            id: combo.id,
+            name: combo.name,
+            loop: Boolean(combo.loop),
+            steps: combo.steps.map(step => ({
+                triggerIndex: step.triggerIndex,
+                pan: step.pan,
+                volume: step.volume,
+                delayMs: step.delayMs,
+                crossfadeMs: step.crossfadeMs,
+                waitForEnd: Boolean(step.waitForEnd)
+            }))
+        };
+
+        const sent = sendBambiAccountMessage(target, {
+            type: 'combo_share_request',
+            targetMemberNumber: target,
+            requestId,
+            senderName: typeof Player !== 'undefined' ? Player.Name || 'Bambi' : 'Bambi',
+            customCombo: transferableCombo
+        });
+
+        if (!sent) {
+            setStatus('Could not send the combo share request.');
+            return false;
+        }
+
+        pendingComboShareSends.set(requestId, {
+            memberNumber: target,
+            comboName: combo.name
+        });
+        setStatus(`Combo share request sent for "${combo.name}".`);
+
+        setTimeout(() => {
+            if (!pendingComboShareSends.has(requestId)) return;
+            pendingComboShareSends.delete(requestId);
+            setStatus('No response to combo share request.');
+        }, 30000);
+
+        return true;
+    }
+
+    function respondToComboShare(requestId, accepted) {
+        const index = pendingComboShares.findIndex(item => item.requestId === requestId);
+        if (index < 0) return;
+
+        const request = pendingComboShares[index];
+        pendingComboShares.splice(index, 1);
+        savePendingComboShares();
+
+        let importedName = request.combo.name;
+        if (accepted) {
+            const baseName = request.combo.name.slice(0, 48);
+            importedName = baseName;
+            let suffix = 2;
+            while (customCombos.some(item => item.name.toLowerCase() === importedName.toLowerCase())) {
+                const ending = suffix === 2 ? ' (shared)' : ` (shared ${suffix})`;
+                importedName = `${baseName.slice(0, Math.max(1, 60 - ending.length))}${ending}`;
+                suffix += 1;
+            }
+
+            const imported = normalizeComboDefinition({
+                ...request.combo,
+                id: createComboId(),
+                name: importedName
+            });
+
+            if (imported) {
+                customCombos.push(imported);
+                saveCustomCombos();
+                if (typeof customSavedListRefresh === 'function') customSavedListRefresh();
+            } else {
+                accepted = false;
+            }
+        }
+
+        sendBambiAccountMessage(request.senderMemberNumber, {
+            type: 'combo_share_result',
+            targetMemberNumber: request.senderMemberNumber,
+            requestId: request.requestId,
+            accepted: Boolean(accepted),
+            comboName: request.combo.name,
+            senderName: typeof Player !== 'undefined' ? Player.Name || 'Bambi' : 'Bambi'
+        });
+
+        setStatus(
+            accepted
+                ? `Accepted combo "${importedName}" from ${request.senderName}.`
+                : `Refused combo "${request.combo.name}" from ${request.senderName}.`
+        );
+        refreshCustomShareControls();
     }
 
     function packetIsForMe(payload) {
@@ -2839,7 +3054,61 @@
             return true;
         }
 
+        if (payload.type === 'combo_share_result') {
+            const requestId = String(payload.requestId || '');
+            const pending = pendingComboShareSends.get(requestId);
+            if (!pending || pending.memberNumber !== sender) return true;
+
+            pendingComboShareSends.delete(requestId);
+            const targetName = isInCurrentRoom(sender) ? getCharacterName(sender) : `#${sender}`;
+            setStatus(
+                payload.accepted === true
+                    ? `${targetName} accepted "${pending.comboName}".`
+                    : `${targetName} refused "${pending.comboName}".`
+            );
+            return true;
+        }
+
         if (!packetIsForMe(payload)) return true;
+
+        if (payload.type === 'combo_share_request') {
+            const requestId = String(payload.requestId || '').slice(0, 160);
+            const incomingCombo = normalizeComboDefinition(payload.customCombo);
+            if (!requestId || !incomingCombo) {
+                if (requestId) {
+                    sendBambiAccountMessage(sender, {
+                        type: 'combo_share_result',
+                        targetMemberNumber: sender,
+                        requestId,
+                        accepted: false,
+                        comboName: String(payload.customCombo?.name || 'custom combo').slice(0, 60)
+                    });
+                }
+                return true;
+            }
+
+            const duplicate = pendingComboShares.some(item => item.requestId === requestId);
+            if (!duplicate && pendingComboShares.length < 30) {
+                pendingComboShares.push({
+                    requestId,
+                    senderMemberNumber: sender,
+                    senderName: String(resolvedSenderName || payload.senderName || `#${sender}`).slice(0, 80),
+                    combo: incomingCombo,
+                    receivedAt: now()
+                });
+                savePendingComboShares();
+                setStatus(`Combo share received from ${resolvedSenderName}.`);
+            } else if (pendingComboShares.length >= 30) {
+                sendBambiAccountMessage(sender, {
+                    type: 'combo_share_result',
+                    targetMemberNumber: sender,
+                    requestId,
+                    accepted: false,
+                    comboName: incomingCombo.name
+                });
+            }
+            return true;
+        }
 
         if (payload.type === 'trigger') {
             const index = Number(payload.triggerIndex);
@@ -4474,6 +4743,7 @@
                     pan: 0,
                     volume: 1,
                     delayMs: 0,
+                    crossfadeMs: 0,
                     waitForEnd: true
                 }]
             });
@@ -4507,6 +4777,7 @@
 
         let draft = null;
         let editingExisting = false;
+        let previewRunKey = '';
 
         function makeFieldLabel(text) {
             const label = document.createElement('div');
@@ -4523,7 +4794,7 @@
             draft = clone(comboValue);
             editingExisting = customCombos.some(combo => combo.id === draft.id);
             if (!Array.isArray(draft.steps) || !draft.steps.length) {
-                draft.steps = [{ triggerIndex: 0, pan: 0, volume: 1, delayMs: 0, waitForEnd: true }];
+                draft.steps = [{ triggerIndex: 0, pan: 0, volume: 1, delayMs: 0, crossfadeMs: 0, waitForEnd: true }];
             }
 
             editor.innerHTML = '';
@@ -4683,6 +4954,27 @@
                         }
                     ));
 
+                    card.appendChild(makeNumberSlider(
+                        'Crossfade into next trigger',
+                        0,
+                        10000,
+                        50,
+                        Math.round(clampNumber(step.crossfadeMs, 0, 10000, 0)),
+                        value => value === 0 ? 'Off' : `${value} ms`,
+                        value => { step.crossfadeMs = Math.round(value); }
+                    ));
+
+                    const crossfadeNote = document.createElement('div');
+                    crossfadeNote.textContent = 'The current set fades down while the next set fades up over this duration.';
+                    Object.assign(crossfadeNote.style, {
+                        color: '#b77d9e',
+                        fontSize: '10px',
+                        lineHeight: '1.35',
+                        marginTop: '-5px',
+                        marginBottom: '5px'
+                    });
+                    card.appendChild(crossfadeNote);
+
                     stepsContainer.appendChild(card);
                 });
             }
@@ -4699,6 +4991,7 @@
                     pan: 0,
                     volume: 1,
                     delayMs: 0,
+                    crossfadeMs: 0,
                     waitForEnd: true
                 });
                 renderSteps();
@@ -4720,7 +5013,46 @@
                 marginTop: '8px'
             });
 
+            const testButton = makeButton('▶ Test draft', () => {
+                if (!draft || !draft.steps.length) {
+                    setStatus('Add at least one trigger before testing.');
+                    return;
+                }
+                if (previewRunKey && comboRuns.has(previewRunKey)) {
+                    stopComboRun(previewRunKey);
+                }
+                const testCombo = normalizeComboDefinition({
+                    ...clone(draft),
+                    name: String(draft.name || 'Combo preview').trim() || 'Combo preview'
+                }, { createId: true });
+                if (!testCombo) {
+                    setStatus('Add at least one valid trigger set before testing.');
+                    return;
+                }
+                const runKey = `preview:${createComboId()}`;
+                previewRunKey = runKey;
+                setStatus(`Testing draft "${testCombo.name}"${testCombo.loop ? ' (looping)' : ''}.`);
+                runCustomCombo(testCombo, runKey).finally(() => {
+                    if (previewRunKey === runKey) previewRunKey = '';
+                });
+            }, false);
+            testButton.style.marginBottom = '0';
+
+            const stopTestButton = makeButton('■ Stop test', () => {
+                if (previewRunKey && stopComboRun(previewRunKey)) {
+                    setStatus('Combo preview stopped.');
+                } else {
+                    setStatus('No combo preview is running.');
+                }
+                previewRunKey = '';
+            }, false);
+            stopTestButton.style.marginBottom = '0';
+
             const saveButton = makeButton('Save combo', () => {
+                if (previewRunKey && comboRuns.has(previewRunKey)) {
+                    stopComboRun(previewRunKey);
+                    previewRunKey = '';
+                }
                 const name = String(draft.name || '').trim();
                 if (!name) {
                     setStatus('Give your combo a name first.');
@@ -4753,11 +5085,15 @@
             saveButton.style.marginBottom = '0';
 
             const cancelButton = makeButton('Cancel', () => {
+                if (previewRunKey && comboRuns.has(previewRunKey)) stopComboRun(previewRunKey);
+                previewRunKey = '';
                 editor.style.display = 'none';
                 draft = null;
             }, false);
             cancelButton.style.marginBottom = '0';
 
+            footer.appendChild(testButton);
+            footer.appendChild(stopTestButton);
             footer.appendChild(saveButton);
             footer.appendChild(cancelButton);
             editor.appendChild(footer);
@@ -4858,11 +5194,193 @@
         }
 
         refreshSavedList();
+        customSavedListRefresh = refreshSavedList;
+
+        const shareHeading = document.createElement('div');
+        shareHeading.textContent = 'Share a custom combo';
+        Object.assign(shareHeading.style, {
+            fontWeight: 'bold',
+            color: '#ffb8d9',
+            margin: '14px 0 7px'
+        });
+        content.appendChild(shareHeading);
+
+        const shareIntro = document.createElement('div');
+        shareIntro.textContent = 'Send a copy to another player. They must accept it in their own Custom tab before it is added to their saved combos.';
+        Object.assign(shareIntro.style, {
+            color: '#d994ba',
+            fontSize: '10px',
+            lineHeight: '1.4',
+            marginBottom: '7px'
+        });
+        content.appendChild(shareIntro);
+
+        customShareComboSelect = document.createElement('select');
+        styleSelect(customShareComboSelect);
+        content.appendChild(customShareComboSelect);
+
+        customShareTargetSelect = document.createElement('select');
+        styleSelect(customShareTargetSelect);
+        content.appendChild(customShareTargetSelect);
+
+        const memberNumberLabel = document.createElement('div');
+        memberNumberLabel.textContent = 'Or enter a Member Number (including another server)';
+        Object.assign(memberNumberLabel.style, {
+            color: '#ffb8d9',
+            fontSize: '10px',
+            marginBottom: '4px'
+        });
+        content.appendChild(memberNumberLabel);
+
+        customShareTargetMemberInput = document.createElement('input');
+        customShareTargetMemberInput.type = 'number';
+        customShareTargetMemberInput.min = '1';
+        customShareTargetMemberInput.placeholder = 'Member Number (optional)';
+        Object.assign(customShareTargetMemberInput.style, {
+            width: '100%',
+            boxSizing: 'border-box',
+            padding: '7px',
+            marginBottom: '7px',
+            background: '#fff0f7',
+            color: '#48172f',
+            border: '1px solid #ff69b4',
+            borderRadius: '5px'
+        });
+        content.appendChild(customShareTargetMemberInput);
+
+        content.appendChild(makeButton('💌 Share combo', () => {
+            const comboId = customShareComboSelect?.value || '';
+            const typedTarget = normalizeMemberNumber(customShareTargetMemberInput?.value);
+            const selectedTargetNumber = normalizeMemberNumber(customShareTargetSelect?.value);
+            shareCustomComboToUser(typedTarget || selectedTargetNumber, comboId);
+        }, true));
+
+        const pendingHeading = document.createElement('div');
+        pendingHeading.textContent = 'Combos shared with you';
+        Object.assign(pendingHeading.style, {
+            fontWeight: 'bold',
+            color: '#ffb8d9',
+            margin: '14px 0 7px'
+        });
+        content.appendChild(pendingHeading);
+
+        customSharePendingContainer = document.createElement('div');
+        content.appendChild(customSharePendingContainer);
+        refreshCustomShareControls();
     }
 
 
     // UI REFRESH
 
+
+    function refreshCustomShareControls() {
+        if (customShareComboSelect) {
+            const oldCombo = customShareComboSelect.value;
+            customShareComboSelect.innerHTML = '';
+            if (!customCombos.length) {
+                const option = document.createElement('option');
+                option.value = '';
+                option.textContent = 'No saved custom combos';
+                customShareComboSelect.appendChild(option);
+            } else {
+                for (const combo of customCombos) {
+                    const option = document.createElement('option');
+                    option.value = combo.id;
+                    option.textContent = combo.name;
+                    customShareComboSelect.appendChild(option);
+                }
+            }
+            if ([...customShareComboSelect.options].some(option => option.value === oldCombo)) {
+                customShareComboSelect.value = oldCombo;
+            }
+            customShareComboSelect.disabled = customCombos.length === 0;
+        }
+
+        if (customShareTargetSelect) {
+            const oldTarget = customShareTargetSelect.value;
+            customShareTargetSelect.innerHTML = '';
+            const myNumber = normalizeMemberNumber(typeof Player !== 'undefined' ? Player.MemberNumber : 0);
+            const members = getRoomCharacters()
+                .map(character => ({
+                    memberNumber: normalizeMemberNumber(character?.MemberNumber),
+                    name: character?.Nickname || character?.Name || 'Unknown'
+                }))
+                .filter(entry => entry.memberNumber && entry.memberNumber !== myNumber)
+                .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = members.length ? 'Choose a player in this room' : 'No other players in room';
+            customShareTargetSelect.appendChild(placeholder);
+            for (const member of members) {
+                const option = document.createElement('option');
+                option.value = String(member.memberNumber);
+                option.textContent = `${member.name} (#${member.memberNumber})`;
+                customShareTargetSelect.appendChild(option);
+            }
+            if ([...customShareTargetSelect.options].some(option => option.value === oldTarget)) {
+                customShareTargetSelect.value = oldTarget;
+            }
+        }
+
+        if (customSharePendingContainer) {
+            customSharePendingContainer.innerHTML = '';
+            if (!pendingComboShares.length) {
+                const empty = document.createElement('div');
+                empty.textContent = 'No pending combo shares.';
+                Object.assign(empty.style, {
+                    color: '#b77d9e',
+                    fontSize: '10px',
+                    lineHeight: '1.4'
+                });
+                customSharePendingContainer.appendChild(empty);
+            } else {
+                for (const request of pendingComboShares) {
+                    const card = document.createElement('div');
+                    Object.assign(card.style, {
+                        border: '1px solid #804266',
+                        borderRadius: '5px',
+                        padding: '7px',
+                        marginBottom: '7px'
+                    });
+
+                    const title = document.createElement('div');
+                    title.textContent = request.combo.name;
+                    Object.assign(title.style, {
+                        fontSize: '11px',
+                        fontWeight: 'bold',
+                        color: '#ffb8d9',
+                        overflowWrap: 'anywhere'
+                    });
+                    card.appendChild(title);
+
+                    const detail = document.createElement('div');
+                    detail.textContent = `From ${request.senderName} (#${request.senderMemberNumber}) · ${request.combo.steps.length} set${request.combo.steps.length === 1 ? '' : 's'}${request.combo.loop ? ' · loop' : ''}`;
+                    Object.assign(detail.style, {
+                        fontSize: '10px',
+                        color: '#b77d9e',
+                        margin: '3px 0 7px'
+                    });
+                    card.appendChild(detail);
+
+                    const actions = document.createElement('div');
+                    Object.assign(actions.style, {
+                        display: 'grid',
+                        gridTemplateColumns: '1fr 1fr',
+                        gap: '5px'
+                    });
+                    const accept = makeButton('Accept', () => respondToComboShare(request.requestId, true), true);
+                    const refuse = makeButton('Refuse', () => respondToComboShare(request.requestId, false), false);
+                    accept.style.marginBottom = '0';
+                    refuse.style.marginBottom = '0';
+                    actions.appendChild(accept);
+                    actions.appendChild(refuse);
+                    card.appendChild(actions);
+                    customSharePendingContainer.appendChild(card);
+                }
+            }
+        }
+    }
 
     function refreshTargetDropdown() {
         if (!targetSelect) return;
@@ -4926,6 +5444,7 @@
         refreshAuthorityControls();
         refreshAuthorityRoleStatus();
         refreshCustomLimitControls();
+        refreshCustomShareControls();
     }
 
 
