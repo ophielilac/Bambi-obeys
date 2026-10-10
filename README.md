@@ -16,7 +16,20 @@ javascript:(()=>{const s=document.createElement('script');s.src='https://ophieli
 ______________________________________________________________________________________________________________
                                                CHANGELOG:
 ______________________________________________________________________________________________________________
-                                                v1.6.7-9
+                                                v1.7.0
+Major additions!!!
+Added a new tab called "Custom"! Inside it, You're able to make custom sets/combos of triggers. 
+
+You're able to share and make these custom sets, which makes the customizability basically endless!
+One thing I should note, due to the loop feature on the custom sets, you might get a infinite loop. If this happens, go to the safety tab, and click end all triggers to make it turn off, if the person giving you the trigger isn't there anymore. 
+
+I also added custom screen effects after triggers, they're still pretty basic, but I'm planning on improving them later on.
+
+Plus some bug fixes.
+Probably added new bugs lol
+
+______________________________________________________________________________________________________________
+                                               v1.6.7-9
 Multiple bug fixes throughout the updates.
 Nothing too big. Just fixed the sleep command messing with the chat customization. 
 ______________________________________________________________________________________________________________
